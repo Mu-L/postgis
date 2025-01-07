@@ -96,13 +96,13 @@ Datum ellipsoid_in(PG_FUNCTION_ARGS)
 	nitems = sscanf(str,"SPHEROID[\"%19[^\"]\",%lf,%lf]",
 	                sphere->name, &sphere->a, &rf);
 
-	if ( nitems==0)
+	if (nitems != 3)
 		nitems = sscanf(str,"SPHEROID(\"%19[^\"]\",%lf,%lf)",
 		                sphere->name, &sphere->a, &rf);
 
 	if (nitems != 3)
 	{
-		elog(ERROR,"SPHEROID parser - couldnt parse the spheroid");
+		elog(ERROR,"SPHEROID parser - couldn't parse the spheroid");
 		pfree(sphere);
 		PG_RETURN_NULL();
 	}
@@ -122,10 +122,10 @@ Datum ellipsoid_out(PG_FUNCTION_ARGS)
 {
 	SPHEROID *sphere = (SPHEROID *) PG_GETARG_POINTER(0);
 	char *result;
+	size_t sz = MAX_DIGS_DOUBLE + MAX_DIGS_DOUBLE + 20 + 9 + 2;
+	result = palloc(sz);
 
-	result = palloc(MAX_DIGS_DOUBLE + MAX_DIGS_DOUBLE + 20 + 9 + 2);
-
-	sprintf(result,"SPHEROID(\"%s\",%.15g,%.15g)",
+	snprintf(result, sz, "SPHEROID(\"%s\",%.15g,%.15g)",
 	        sphere->name, sphere->a, 1.0/sphere->f);
 
 	PG_RETURN_CSTRING(result);
@@ -441,7 +441,7 @@ Datum LWGEOM_length_ellipsoid_linestring(PG_FUNCTION_ARGS)
  *
  *  Parts taken from PROJ - geodetic_to_geocentric() (for calculating Rn)
  *
- *  remember that lat1/long1/lat2/long2 are comming in a *RADIANS* not degrees.
+ *  remember that lat1/long1/lat2/long2 are coming in a *RADIANS* not degrees.
  *
  * By Patricia Tozer and Dave Blasby
  *
@@ -521,6 +521,8 @@ Datum geometry_distance_spheroid(PG_FUNCTION_ARGS)
 	/* We are going to be calculating geodetic distances */
 	lwgeom_set_geodetic(lwgeom1, LW_TRUE);
 	lwgeom_set_geodetic(lwgeom2, LW_TRUE);
+	lwgeom_refresh_bbox(lwgeom1);
+	lwgeom_refresh_bbox(lwgeom2);
 
 	distance = lwgeom_distance_spheroid(lwgeom1, lwgeom2, sphere, 0.0);
 

@@ -582,8 +582,7 @@ Datum RASTER_Contour(PG_FUNCTION_ARGS)
 
 		/* No-op on bad return */
 		if (rv == FALSE) {
-			funcctx = SRF_PERCALL_SETUP();
-			SRF_RETURN_DONE(funcctx);
+			PG_RETURN_NULL();
 		}
 
 		funcctx->user_fctx = result;
@@ -672,7 +671,7 @@ Datum RASTER_InterpolateRaster(PG_FUNCTION_ARGS)
 	LWGEOM *lwgeom;
 	double *xcoords, *ycoords, *zcoords;
 
-	GSERIALIZED *gser = (GSERIALIZED*)PG_GETARG_POINTER(0);
+	GSERIALIZED *gser = (GSERIALIZED*)PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
 
 	/* Z value is required to drive the grid heights */
 	if (!gserialized_has_z(gser))
