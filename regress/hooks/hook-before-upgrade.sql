@@ -3,27 +3,10 @@ INSERT INTO upgrade_test(g1,g2) VALUES
 ('POINT(0 0)', 'LINESTRING(0 0, 1 1)'),
 ('POINT(1 0)', 'LINESTRING(0 1, 1 1)');
 
--- We know upgrading with an st_union() based view
--- fails unless you're on PostgreSQL 12, so we don't
--- even try that.
---
--- We could re-enable this test IF we fix the upgrade
--- in pre-12 versions. Refer to
--- https://trac.osgeo.org/postgis/ticket/4386
---
-DO $BODY$
-DECLARE
-	vernum INT;
-BEGIN
-	show server_version_num INTO vernum;
-	IF vernum >= 120000
-	THEN
-		RAISE DEBUG '12+ server (%)', vernum;
-    CREATE VIEW upgrade_view_test_union AS
-    SELECT ST_Union(g1) FROM upgrade_test;
-	END IF;
-END;
-$BODY$ LANGUAGE 'plpgsql';
+-- Add view using ST_Union aggregate
+-- See https://trac.osgeo.org/postgis/ticket/4386
+CREATE VIEW upgrade_view_test_union AS
+SELECT ST_Union(g1) FROM upgrade_test;
 
 -- Add view using overlay functions
 CREATE VIEW upgrade_view_test_overlay AS
@@ -67,13 +50,16 @@ SELECT
 	ST_AsKML(g2) as geography_askml
 FROM upgrade_test;
 
--- Add view using ST_DWithin function
--- NOTE: 3.0.0 changed them to add default params
+-- Add view using ST_DWithin functions
+-- See https://trac.osgeo.org/postgis/ticket/5494
 CREATE VIEW upgrade_view_test_dwithin AS
 SELECT
-	ST_DWithin(g1::text, g1::text, 1) as text_dwithin,
-	ST_DWithin(g2, g2, 1) as geography_dwithin
-FROM upgrade_test;
+	ST_DWithin(NULL::text, NULL::text, NULL::float8) as text_dwithin,
+	-- Available since 1.5.0, changed in 3.0.0 to add optional 4th use_spheroid param
+	ST_DWithin(NULL::geography, NULL::geography, NULL::float8) as geography_dwithin,
+	-- Available since 1.3.0
+	ST_DWithin(NULL::geometry, NULL::geometry, NULL::float8) as geometry_dwithin
+;
 
 -- Add view using ST_ClusterKMeans windowing function
 -- NOTE: 3.2.0 changed it to add max_radius parameter
@@ -82,7 +68,25 @@ SELECT
 	ST_ClusterKMeans(g1, 1) OVER ()
 FROM upgrade_test;
 
+-- This view uses ST_Distance signatures, available since 1.5.0
+-- NOTE: 3.0.0 changed them to use default arguments
+-- See https://trac.osgeo.org/postgis/ticket/5380
+CREATE VIEW upgrade_view_test_distance AS
+SELECT
+	ST_Distance(g2, g2) geog_dist1,
+	ST_Distance(g2, g2, true) geog_dist2
+FROM upgrade_test;
+
 -- Break probin of all postgis functions, as we expect
 -- the upgrade procedure to replace them all
 UPDATE pg_proc SET probin = probin || '-uninstalled'
 WHERE probin like '%postgis%';
+
+
+-- Change SECURITY of postgis_version() to DEFINER
+-- to verify the bit is reset upon upgrade
+--
+-- NOTE: we pick postgis_version as one of the oldest
+--       function names
+--
+ALTER FUNCTION postgis_version() SECURITY DEFINER;

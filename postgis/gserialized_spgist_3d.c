@@ -81,11 +81,11 @@ Datum gserialized_overlaps_3d(PG_FUNCTION_ARGS)
 {
 	BOX3D *box1 = DatumGetBox3DP(DirectFunctionCall1(LWGEOM_to_BOX3D, PG_GETARG_DATUM(0)));
 	BOX3D *box2 = DatumGetBox3DP(DirectFunctionCall1(LWGEOM_to_BOX3D, PG_GETARG_DATUM(1)));
-	bool resut = BOX3D_overlaps_internal(box1, box2);
+	bool result = BOX3D_overlaps_internal(box1, box2);
 	pfree(box1);
 	pfree(box2);
 
-	PG_RETURN_BOOL(resut);
+	PG_RETURN_BOOL(result);
 }
 
 PG_FUNCTION_INFO_V1(gserialized_contains_3d);
@@ -93,11 +93,11 @@ Datum gserialized_contains_3d(PG_FUNCTION_ARGS)
 {
 	BOX3D *box1 = DatumGetBox3DP(DirectFunctionCall1(LWGEOM_to_BOX3D, PG_GETARG_DATUM(0)));
 	BOX3D *box2 = DatumGetBox3DP(DirectFunctionCall1(LWGEOM_to_BOX3D, PG_GETARG_DATUM(1)));
-	bool resut = BOX3D_contains_internal(box1, box2);
+	bool result = BOX3D_contains_internal(box1, box2);
 	pfree(box1);
 	pfree(box2);
 
-	PG_RETURN_BOOL(resut);
+	PG_RETURN_BOOL(result);
 }
 
 PG_FUNCTION_INFO_V1(gserialized_contained_3d);
@@ -105,11 +105,11 @@ Datum gserialized_contained_3d(PG_FUNCTION_ARGS)
 {
 	BOX3D *box1 = DatumGetBox3DP(DirectFunctionCall1(LWGEOM_to_BOX3D, PG_GETARG_DATUM(0)));
 	BOX3D *box2 = DatumGetBox3DP(DirectFunctionCall1(LWGEOM_to_BOX3D, PG_GETARG_DATUM(1)));
-	bool resut = BOX3D_contained_internal(box1, box2);
+	bool result = BOX3D_contained_internal(box1, box2);
 	pfree(box1);
 	pfree(box2);
 
-	PG_RETURN_BOOL(resut);
+	PG_RETURN_BOOL(result);
 }
 
 PG_FUNCTION_INFO_V1(gserialized_same_3d);
@@ -117,11 +117,11 @@ Datum gserialized_same_3d(PG_FUNCTION_ARGS)
 {
 	BOX3D *box1 = DatumGetBox3DP(DirectFunctionCall1(LWGEOM_to_BOX3D, PG_GETARG_DATUM(0)));
 	BOX3D *box2 = DatumGetBox3DP(DirectFunctionCall1(LWGEOM_to_BOX3D, PG_GETARG_DATUM(1)));
-	bool resut = BOX3D_same_internal(box1, box2);
+	bool result = BOX3D_same_internal(box1, box2);
 	pfree(box1);
 	pfree(box2);
 
-	PG_RETURN_BOOL(resut);
+	PG_RETURN_BOOL(result);
 }
 
 /*
@@ -156,7 +156,7 @@ typedef struct
  * a corner of the box. This makes 64 octants in total.
  */
 static uint8
-getOctant(BOX3D *centroid, BOX3D *inBox)
+getOctant(const BOX3D *centroid, const BOX3D *inBox)
 {
 	uint8 octant = 0;
 
@@ -430,20 +430,21 @@ PGDLLEXPORT Datum gserialized_spgist_picksplit_3d(PG_FUNCTION_ARGS)
 	double *highYs = palloc(sizeof(double) * in->nTuples);
 	double *lowZs = palloc(sizeof(double) * in->nTuples);
 	double *highZs = palloc(sizeof(double) * in->nTuples);
-	BOX3D *box = DatumGetBox3DP(in->datums[0]);
-	int32_t srid = box->srid;
+	int32_t srid = SRID_UNKNOWN;
 
 	/* Calculate median of all 6D coordinates */
 	for (i = 0; i < in->nTuples; i++)
 	{
-		BOX3D *box = DatumGetBox3DP(in->datums[i]);
+		BOX3D* box_in = DatumGetBox3DP(in->datums[i]);
+		lowXs[i] = box_in->xmin;
+		highXs[i] = box_in->xmax;
+		lowYs[i] = box_in->ymin;
+		highYs[i] = box_in->ymax;
+		lowZs[i] = box_in->zmin;
+		highZs[i] = box_in->zmax;
 
-		lowXs[i] = box->xmin;
-		highXs[i] = box->xmax;
-		lowYs[i] = box->ymin;
-		highYs[i] = box->ymax;
-		lowZs[i] = box->zmin;
-		highZs[i] = box->zmax;
+		if (i == 0)
+			srid = box_in->srid;
 	}
 
 	qsort(lowXs, in->nTuples, sizeof(double), compareDoubles);
@@ -481,10 +482,10 @@ PGDLLEXPORT Datum gserialized_spgist_picksplit_3d(PG_FUNCTION_ARGS)
 	 */
 	for (i = 0; i < in->nTuples; i++)
 	{
-		BOX3D *box = DatumGetBox3DP(in->datums[i]);
-		uint8 octant = getOctant(centroid, box);
+		BOX3D* box_in = DatumGetBox3DP(in->datums[i]);
+		uint8 octant = getOctant(centroid, box_in);
 
-		out->leafTupleDatums[i] = Box3DPGetDatum(box);
+		out->leafTupleDatums[i] = Box3DPGetDatum(box_in);
 		out->mapTuplesToNodes[i] = octant;
 	}
 
@@ -549,7 +550,7 @@ PGDLLEXPORT Datum gserialized_spgist_inner_consistent_3d(PG_FUNCTION_ARGS)
 	 */
 	old_ctx = MemoryContextSwitchTo(in->traversalMemoryContext);
 
-	for (octant = 0; octant < in->nNodes; octant++)
+	for (octant = 0; octant < (uint8)in->nNodes; octant++)
 	{
 		CubeBox3D *next_cube_box = nextCubeBox3D(cube_box, centroid, octant);
 		bool flag = true;

@@ -4,7 +4,7 @@
 # PostGIS - Spatial Types for PostgreSQL
 # http://postgis.net
 #
-# Copyright (C) 2013 Sandro Santilli <strk@kbt.io>
+# Copyright (C) 2013-2022 Sandro Santilli <strk@kbt.io>
 #
 # This is free software; you can redistribute and/or modify it under
 # the terms of the GNU General Public Licence. See the COPYING file.
@@ -24,6 +24,7 @@ die "Usage: perl $0 <extname> [<sql>]\n"
 unless @ARGV;
 
 my $extname = shift(@ARGV);
+my $scriptname = @ARGV ? $ARGV[0] : '-';
 
 # drops are in the following order:
 #	1. Indexing system stuff
@@ -141,48 +142,77 @@ while( my $line = <>)
 sub add_if_not_exists
 {
   my $obj = shift;
-  print <<"EOF"
-DO \$\$
-BEGIN
- ALTER EXTENSION $extname ADD $obj;
- RAISE NOTICE 'newly registered $obj';
-EXCEPTION WHEN object_not_in_prerequisite_state THEN
-  IF SQLERRM ~ '\\m$extname\\M'
-  THEN
-    RAISE NOTICE 'already registered $obj';
-  ELSE
-    RAISE EXCEPTION '%', SQLERRM;
-  END IF;
-END;
-\$\$ LANGUAGE 'plpgsql';
-EOF
+
+	# Prevent troubles by refusing to accept single quotes
+	# in objects
+	die "Invalid characters in object definition: $obj" if $obj =~ /'/;
+
+	$obj =~ m/([^ ]*) (.*)/s; # can be multiline
+	my $type = $1;
+	my $sig = $2;
+
+
+  print "SELECT _postgis_package_object('$type', '$sig');\n";
 }
 
 my $time = POSIX::strftime("%F %T", gmtime(defined($ENV{SOURCE_DATE_EPOCH}) ? $ENV{SOURCE_DATE_EPOCH} : time));
-print "-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n";
-print "--\n";
-print "-- PostGIS - Spatial Types for PostgreSQL\n";
-print "-- http://postgis.net\n";
-print "--\n";
-print "-- This is free software; you can redistribute and/or modify it under\n";
-print "-- the terms of the GNU General Public Licence. See the COPYING file.\n";
-print "--\n";
-print "-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n";
-print "--\n";
-print "-- Generated on: " . $time . "\n";
-print "--           by: " . $0 . "\n";
-print "--          for: " . $extname . "\n";
-print "--         from: " . ( @ARGV ? $ARGV[0] : '-' ) . "\n";
-print "--\n";
-print "-- Do not edit manually, your changes will be lost.\n";
-print "--\n";
-print "-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n";
-print "\n";
+print <<"EOF";
+-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+--
+-- PostGIS - Spatial Types for PostgreSQL
+-- http://postgis.net
+--
+-- This is free software; you can redistribute and/or modify it under
+-- the terms of the GNU General Public Licence. See the COPYING file.
+--
+-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+--
+-- Generated on: $time
+--           by: $0
+--          for: $extname
+--         from: $scriptname
+--
+-- Do not edit manually, your changes will be lost.
+--
+-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
 
-print "-- complain if script is sourced in psql\n";
-print '\echo Use "CREATE EXTENSION ' . ${extname} .
-      '" to load this file. \quit';
-print "\n\n";
+
+-- complain if script is sourced in psql
+\\echo Use "CREATE EXTENSION ${extname} to load this file. \\quit
+
+CREATE FUNCTION _postgis_package_object(type text, sig text)
+RETURNS VOID
+AS \$\$
+DECLARE
+	sql text;
+	proc regproc;
+	obj text := format('%s %s', type, sig);
+BEGIN
+
+	sql := format('ALTER EXTENSION ${extname} ADD %s', obj);
+	EXECUTE sql;
+	RAISE NOTICE 'newly registered %', obj;
+
+EXCEPTION
+WHEN object_not_in_prerequisite_state THEN
+  IF SQLERRM ~ '\\m${extname}\\M'
+  THEN
+    RAISE NOTICE '% already registered', obj;
+  ELSE
+    RAISE EXCEPTION '%', SQLERRM;
+  END IF;
+WHEN
+	undefined_function OR
+	undefined_table OR
+	undefined_object
+	-- TODO: handle more exceptions ?
+THEN
+	RAISE NOTICE '% % does not exist yet', type, sig;
+WHEN OTHERS THEN
+	RAISE EXCEPTION 'Trying to add % to ${extname}, got % (%)', obj, SQLERRM, SQLSTATE;
+END;
+\$\$ LANGUAGE 'plpgsql';
+EOF
 
 print "-- Register all views.\n";
 foreach my $view (@views)
@@ -257,9 +287,8 @@ foreach my $cast (@casts)
 	}
 }
 
-print "-- Register all functions except " . (keys %type_funcs) . " needed for type definition.\n";
-my @type_funcs= (); # function to drop _after_ type drop
-foreach my $fn (@funcs)
+print "-- Register all functions.\n";
+foreach my $fn ( @funcs )
 {
 	if ($fn =~ /.* function ([^(]+)\((.*)\)/is ) # can be multiline
 	{
@@ -267,36 +296,11 @@ foreach my $fn (@funcs)
 		my $fn_arg = $2;
 
 		$fn_arg = strip_default($fn_arg);
-		if ( ! exists($type_funcs{$fn_nm}) )
-		{
-			add_if_not_exists("FUNCTION $fn_nm ($fn_arg)");
-		}
-		else
-		{
-			push(@type_funcs, $fn);
-		}
-	}
-	else
-	{
-		die "Couldn't parse FUNCTION line: $fn\n";
-	}
-}
-
-print "-- Add all functions needed for types definition (needed?).\n";
-foreach my $fn (@type_funcs)
-{
-	if ($fn =~ /.* function ([^(]+)\((.*)\)/i )
-	{
-		my $fn_nm = $1;
-		my $fn_arg = $2;
-
-		$fn_arg =~ s/DEFAULT [\w']+//ig;
-
 		add_if_not_exists("FUNCTION $fn_nm ($fn_arg)");
 	}
 	else
 	{
-		die "Couldn't parse line: $fn\n";
+		die "Couldn't parse FUNCTION line: $fn\n";
 	}
 }
 
@@ -319,6 +323,58 @@ foreach my $type (@types)
 #  }
 #}
 
+
+print <<"EOF";
+DROP FUNCTION _postgis_package_object(text, text);
+
+-- Security checks
+DO LANGUAGE 'plpgsql' \$BODY\$
+DECLARE
+	rec RECORD;
+	sql TEXT;
+BEGIN
+
+	-- Check extension functions are all owned by a superuser
+	FOR rec IN
+		SELECT
+			p.oid,
+			p.proowner,
+			e.extowner,
+			r.rolsuper
+		FROM pg_catalog.pg_depend AS d
+			INNER JOIN pg_catalog.pg_extension AS e ON (d.refobjid = e.oid)
+			INNER JOIN pg_catalog.pg_proc AS p ON (d.objid = p.oid)
+			INNER JOIN pg_catalog.pg_roles AS r ON (r.oid = p.proowner)
+		WHERE d.refclassid = 'pg_catalog.pg_extension'::pg_catalog.regclass
+		AND deptype = 'e'
+		AND e.extname = '${extname}'
+		AND d.classid = 'pg_catalog.pg_proc'::pg_catalog.regclass
+	LOOP
+		IF NOT rec.rolsuper THEN
+			RAISE EXCEPTION 'Function % is owned by non-superuser %',
+					rec.oid::regprocedure, rec.proowner::regrole;
+		END IF;
+		IF NOT rec.proowner = rec.extowner THEN
+			RAISE NOTICE
+					'Changing ownership of function % from % to % to match ext',
+					rec.oid::regprocedure, rec.proowner::regrole,
+					rec.extowner::regrole;
+			sql := format(
+				'ALTER FUNCTION %s OWNER TO %I',
+				rec.oid::regprocedure,
+				rec.extowner::regrole
+			);
+			EXECUTE sql;
+		END IF;
+	END LOOP;
+
+	-- TODO: check ownership of more objects ?
+
+END;
+\$BODY\$;
+
+
+EOF
 
 print "\n";
 

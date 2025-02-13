@@ -380,7 +380,7 @@ rt_errorstate rt_raster_surface(rt_raster raster, int nband, LWMPOLY **surface) 
 			lwgeom_as_multi() only does a shallow clone internally
 			so input and output geometries may share memory
 			hence the deep clone of the output geometry for returning
-			is the only way to guarentee the memory isn't shared
+			is the only way to guarantee the memory isn't shared
 		*/
 		if (rt_raster_get_convex_hull(raster, &tmp) != ES_NONE) {
 			rterror("rt_raster_surface: Could not get convex hull of raster");
@@ -413,7 +413,7 @@ rt_errorstate rt_raster_surface(rt_raster raster, int nband, LWMPOLY **surface) 
 			lwgeom_as_multi() only does a shallow clone internally
 			so input and output geometries may share memory
 			hence the deep clone of the output geometry for returning
-			is the only way to guarentee the memory isn't shared
+			is the only way to guarantee the memory isn't shared
 		*/
 		if (rt_raster_get_convex_hull(raster, &tmp) != ES_NONE) {
 			rterror("rt_raster_surface: Could not get convex hull of raster");
@@ -551,7 +551,7 @@ rt_errorstate rt_raster_surface(rt_raster raster, int nband, LWMPOLY **surface) 
 				lwgeom_as_multi() only does a shallow clone internally
 				so input and output geometries may share memory
 				hence the deep clone of the output geometry for returning
-				is the only way to guarentee the memory isn't shared
+				is the only way to guarantee the memory isn't shared
 			*/
 			mpoly = lwgeom_as_multi(tmp);
 			clone = lwgeom_clone_deep(mpoly);
@@ -1158,8 +1158,9 @@ rt_raster_gdal_polygonize(
 	 * Thanks to David Zwarg.
 	 **/
 	if (iBandHasNodataValue) {
-		pszQuery = (char *) rtalloc(50 * sizeof (char));
-		sprintf(pszQuery, "PixelValue != %f", dBandNoData );
+		size_t sz = 50 * sizeof (char);
+		pszQuery = (char *) rtalloc(sz);
+		snprintf(pszQuery, sz, "PixelValue != %f", dBandNoData );
 		OGRErr e = OGR_L_SetAttributeFilter(hLayer, pszQuery);
 		if (e != OGRERR_NONE) {
 			rtwarn("Error filtering NODATA values for band. All values will be treated as data values");
@@ -1231,6 +1232,7 @@ rt_raster_gdal_polygonize(
 
 		/* convert WKB to LWGEOM */
 		lwgeom = lwgeom_from_wkb(wkb, wkbsize, LW_PARSER_CHECK_NONE);
+		if (!lwgeom) rterror("%s: invalid wkb", __func__);
 
 #if POSTGIS_DEBUG_LEVEL > 3
 		{

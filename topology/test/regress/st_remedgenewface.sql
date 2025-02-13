@@ -32,15 +32,23 @@ BEGIN
   sql2 := 'node_id, containing_face
   		FROM orig_node_summary';
 
-  q := '(' ||
-          'SELECT ' || quote_literal(lbl) || ',''+'' as op,' || sql1 ||
-          ' EXCEPT ' ||
-          'SELECT ' || quote_literal(lbl) || ',''+'',' || sql2 ||
-          ') UNION ( ' ||
-          'SELECT ' || quote_literal(lbl) || ',''-'',' || sql2 ||
-          ' EXCEPT ' ||
-          'SELECT ' || quote_literal(lbl) || ',''-'',' || sql1 ||
-       ') ORDER BY node_id, op';
+  q := format(
+    $SQL$
+      (
+          SELECT %1$L, '+' as op, %2$s
+            EXCEPT
+          SELECT %1$L, '+', %3$s
+      ) UNION ALL (
+          SELECT %1$L, '-', %3$s
+            EXCEPT
+          SELECT %1$L, '-', %2$s
+      )
+      ORDER BY node_id, op
+    $SQL$,
+    lbl,
+    sql1,
+    sql2
+  );
 
   RAISE DEBUG '%', q;
 
@@ -78,15 +86,23 @@ BEGIN
   		next_left_edge, next_right_edge, left_face, right_face
   		FROM orig_edge_summary';
 
-  q := '(' ||
-          'SELECT ' || quote_literal(lbl) || ',''+'' as op,' || sql1 ||
-          ' EXCEPT ' ||
-          'SELECT ' || quote_literal(lbl) || ',''+'',' || sql2 ||
-          ') UNION ( ' ||
-          'SELECT ' || quote_literal(lbl) || ',''-'',' || sql2 ||
-          ' EXCEPT ' ||
-          'SELECT ' || quote_literal(lbl) || ',''-'',' || sql1 ||
-       ') order by edge_id, op';
+  q := format(
+    $SQL$
+      (
+          SELECT %1$L, '+' as op, %2$s
+            EXCEPT
+          SELECT %1$L, '+', %3$s
+      ) UNION ALL (
+          SELECT %1$L, '-', %3$s
+            EXCEPT
+          SELECT %1$L, '-', %2$s
+      )
+      ORDER BY edge_id, op
+    $SQL$,
+    lbl,
+    sql1,
+    sql2
+  );
 
   RAISE DEBUG '%', q;
 
@@ -116,15 +132,24 @@ BEGIN
   sql1 := 'face_id, ST_AsEWKT(mbr) FROM city_data.face';
   sql2 := 'face_id, ST_AsEWKT(mbr) FROM orig_face_summary';
 
-  q := '(' ||
-          'SELECT ' || quote_literal(lbl) || ',''+'' as op,' || sql1 ||
-          ' EXCEPT ' ||
-          'SELECT ' || quote_literal(lbl) || ',''+'',' || sql2 ||
-          ') UNION ( ' ||
-          'SELECT ' || quote_literal(lbl) || ',''-'',' || sql2 ||
-          ' EXCEPT ' ||
-          'SELECT ' || quote_literal(lbl) || ',''-'',' || sql1 ||
-       ') ORDER BY face_id, op';
+  q := format(
+    $SQL$
+      (
+          SELECT %1$L, '+' as op, %2$s
+            EXCEPT
+          SELECT %1$L, '+', %3$s
+      ) UNION ALL (
+          SELECT %1$L, '-' as op, %3$s
+            EXCEPT
+          SELECT %1$L, '-' as op, %2$s
+      )
+      ORDER BY face_id, op
+    $SQL$,
+    lbl,
+    sql1,
+    sql2
+  );
+
 
   RAISE DEBUG '%', q;
 
@@ -414,7 +439,39 @@ DROP SCHEMA features CASCADE;
 -------------------------------------------------------------------------
 -------------------------------------------------------------------------
 
--- clean up
+-------------------------------------------------------------------------
+-- Test for https://trac.osgeo.org/postgis/ticket/5106
+-------------------------------------------------------------------------
+
+BEGIN;
+SELECT NULL FROM topology.CreateTopology('t5106');
+INSERT INTO t5106.node VALUES ( 1, NULL, 'POINT(0 0)' );
+-- Cannot reference non-existing faces w/out dropping
+-- these constraints
+ALTER TABLE t5106.edge_data DROP constraint left_face_exists;
+ALTER TABLE t5106.edge_data DROP constraint right_face_exists;
+INSERT INTO t5106.edge VALUES
+(
+	1, -- edge_id
+	1, 1, -- start/end node
+	1, -1, -- next left/right edge
+	1, 2, -- left/right faces (different, both non-0 and non existent)
+  'LINESTRING(0 0,10 0,10 10,0 0)'
+);
+DO $BODY$
+BEGIN
+	PERFORM topology.ST_RemEdgeNewFace('t5106', 1);
+	RAISE EXCEPTION '#5106 failed throwing an exception';
+EXCEPTION WHEN OTHERS THEN
+	RAISE EXCEPTION '#5106 threw: %', SQLERRM;
+END;
+$BODY$ LANGUAGE 'plpgsql';
+ROLLBACK;
+
+----------------------------
+-- Clean up
+----------------------------
+
 DROP FUNCTION save_edges();
 DROP FUNCTION check_edges(text);
 DROP FUNCTION save_faces();
