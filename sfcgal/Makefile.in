@@ -46,7 +46,7 @@ SQL_OBJS = \
 
 # Objects to build using PGXS
 
-OBJS = lwgeom_sfcgal.o
+OBJS = lwgeom_sfcgal.o postgis_sfcgal_legacy.o
 
 # Libraries to link into the module (proj, geos)
 #
@@ -122,26 +122,29 @@ $(SQL_OBJS): ../postgis_config.h ../postgis_revision.h
 # and adding the version number
 # replace @extschema@. with nothing, this is only used as placeholder for extension install
 %.sql: %.sql.in
-	$(SQLPP) -I@top_builddir@/postgis $< | grep -v '^#' | \
+	$(SQLPP) -I@top_builddir@/postgis $< > $@.tmp
+	grep -v '^#' $@.tmp | \
 	$(PERL) -lpe "s'MODULE_PATHNAME'\$(MODULEPATH)'g;s'@extschema@\.''g" > $@
+	rm -f $@.tmp
 
-sfcgal_upgrade.sql.in: sfcgal.sql ../utils/postgis_proc_upgrade.pl
-	$(PERL) @top_srcdir@/utils/postgis_proc_upgrade.pl $< UNUSED > $@
+sfcgal_upgrade.sql.in: sfcgal.sql ../utils/create_upgrade.pl
+	$(PERL) @top_srcdir@/utils/create_upgrade.pl $< > $@
 
 sfcgal_upgrade.sql: sfcgal_before_upgrade.sql sfcgal_upgrade.sql.in sfcgal_after_upgrade.sql
 	echo "BEGIN;" > $@
 	cat $^ >> $@
 	echo "COMMIT;" >> $@
 
-uninstall_sfcgal_legacy.sql: sfcgal_legacy.sql ../utils/create_undef.pl
-	$(PERL) @top_srcdir@/utils/create_undef.pl $< $(POSTGIS_PGSQL_VERSION) > $@
+uninstall_sfcgal_legacy.sql: sfcgal_legacy.sql ../utils/create_uninstall.pl
+	$(PERL) @top_srcdir@/utils/create_uninstall.pl $< $(POSTGIS_PGSQL_VERSION) > $@
 
-uninstall_sfcgal.sql: sfcgal.sql ../utils/create_undef.pl
-	$(PERL) @top_srcdir@/utils/create_undef.pl $< $(POSTGIS_PGSQL_VERSION) > $@
+uninstall_sfcgal.sql: sfcgal.sql ../utils/create_uninstall.pl
+	$(PERL) @top_srcdir@/utils/create_uninstall.pl $< $(POSTGIS_PGSQL_VERSION) > $@
 
 distclean: clean
 	rm -f Makefile
 	rm -f regress/Makefile
+	rm -f regress/tests.mk
 
 check-unit:
 
@@ -149,5 +152,7 @@ check-regress:
 
 maintainer-clean: distclean
 
-check:
+check: check-regress
+
+check-regress:
 	$(MAKE) -C regress check
