@@ -39,15 +39,13 @@ DATA_built = \
 # Scripts making up the extension file
 # NOTE: order matters
 EXTENSION_SCRIPTS = \
-	sql/rtpostgis.sql \
-	sql/raster_comments.sql
+	sql/rtpostgis.sql
 
 # Scripts making up the extension minor upgrade file
 # NOTE: order matters
 EXTENSION_UPGRADE_SCRIPTS = \
 	../postgis_extension_helper.sql \
 	sql/rtpostgis_upgrade.sql \
-	../../doc/raster_comments.sql \
 	../postgis_extension_helper_uninstall.sql
 
 # Scripts making up the extension upgrade-from-unpackaged file
@@ -78,10 +76,10 @@ sql/$(EXTENSION)--$(EXTVERSION).sql: $(EXTENSION_SCRIPTS) | sql
 sql/$(EXTENSION)--unpackaged.sql: Makefile | sql
 	echo "-- Nothing to do here" > $@
 
-sql/$(EXTENSION)--unpackaged--$(EXTVERSION).sql: $(EXTENSION_UNPACKAGED_UPGRADE_SCRIPTS) | ../../utils/create_unpackaged.pl sql/$(EXTENSION)--ANY--$(EXTVERSION).sql Makefile sql
-	# Ensure version is correct
-	cat sql/$(EXTENSION)--ANY--$(EXTVERSION).sql > $@
-	cat $^ | $(PERL) @top_srcdir@/utils/create_unpackaged.pl postgis_raster >> $@
+sql/$(EXTENSION)--unpackaged--$(EXTVERSION).sql: sql/$(EXTENSION)--ANY--$(EXTVERSION).sql sql/$(EXTENSION)--$(EXTVERSION).sql ../../utils/create_unpackaged.pl Makefile | sql
+	cat sql/$(EXTENSION)--$(EXTVERSION).sql | $(PERL) @top_srcdir@/utils/create_unpackaged.pl $(EXTENSION) > $@
+	# Upgrade after packaging
+	cat sql/$(EXTENSION)--ANY--$(EXTVERSION).sql >> $@
 
 unpackaged_check.sql: unpackaged_check.sql.in Makefile
 	cat $< \
@@ -93,28 +91,24 @@ sql/rtpostgis.sql: sql/rtpostgis_for_extension.sql | sql
 	$(PERL) -pe 's/BEGIN\;//g ; s/COMMIT\;//g' $< > $@
 
 sql/rtpostgis_for_extension.sql: ../../raster/rt_pg/rtpostgis.sql.in ../../postgis_revision.h | sql
-	$(SQLPP) -I@builddir@/../../postgis/ -I../../ $< | grep -v '^#' | \
+	$(SQLPP) -I@builddir@/../../postgis/ -I../../ $< > $@.tmp
+	grep -v '^#' $@.tmp | \
 	$(PERL) -lpe "s'MODULE_PATHNAME'\$(MODULEPATH)'g" > $@
+	rm -f $@.tmp
 
 sql/rtpostgis_upgrade.sql: sql/rtpostgis_upgrade_for_extension.sql | sql
 	$(PERL) -pe "s/BEGIN\;//g ; s/COMMIT\;//g; s/^(DROP .*)\;/SELECT postgis_extension_drop_if_exists('$(EXTENSION)', '\1');\n\1\;/" $< > $@
 
 #this keeps the @extschema@. in place since extension machinery will replace during install
-sql/rtpostgis_upgrade_for_extension.sql: ../../raster/rt_pg/rtpostgis_upgrade_cleanup.sql sql/rtpostgis_upgrade_for_extension.sql.in ../../raster/rt_pg/rtpostgis_drop.sql | sql
+sql/rtpostgis_upgrade_for_extension.sql: ../../postgis/common_before_upgrade.sql ../../raster/rt_pg/rtpostgis_upgrade_cleanup.sql sql/rtpostgis_upgrade_for_extension.sql.in ../../raster/rt_pg/rtpostgis_drop.sql ../../postgis/common_after_upgrade.sql | sql
 	echo 'BEGIN;' > $@
 	cat $^ | sed -e 's/^BEGIN;$$//' -e 's/^COMMIT;$$//' >> $@
 	echo 'COMMIT;' >> $@
 
 
-sql/rtpostgis_upgrade_for_extension.sql.in: sql/rtpostgis_for_extension.sql ../../utils/postgis_proc_upgrade.pl | sql
-	$(PERL) @top_srcdir@/utils/postgis_proc_upgrade.pl $< UNUSED > $@
+sql/rtpostgis_upgrade_for_extension.sql.in: sql/rtpostgis_for_extension.sql ../../utils/create_upgrade.pl | sql
+	$(PERL) @top_srcdir@/utils/create_upgrade.pl $< > $@
 
-
-../../doc/raster_comments.sql:
-	$(MAKE) -C ../../doc comments
-
-sql/raster_comments.sql: ../../doc/raster_comments.sql | sql
-	cp $< $@
 
 sql/$(EXTENSION)--ANY--$(EXTVERSION).sql: $(EXTENSION_UPGRADE_SCRIPTS) | sql
 	printf '\\echo Use "CREATE EXTENSION $(EXTENSION)" to load this file. \\quit\n' > $@
@@ -129,6 +123,14 @@ PG_CONFIG := @PG_CONFIG@
 PGXS := @PGXS@
 include $(PGXS)
 PERL = @PERL@
+INSTALL=@INSTALL@
+INSTALL_DATA=@INSTALL_DATA@
+ifneq (@MKDIR_P@,)
+	MKDIR_P = @MKDIR_P@
+endif
 
 VPATH = @srcdir@
 
+top_srcdir = @top_srcdir@
+top_builddir = @top_builddir@
+abs_topbuilddir=$(abspath $(top_builddir))

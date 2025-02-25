@@ -1,23 +1,51 @@
 EXTDIR=$(DESTDIR)$(datadir)/$(datamoduledir)
 
+TAG_UPGRADE=$(EXTENSION)--TEMPLATED--TO--ANY.sql
+
+PG_SHAREDIR=$(shell $(PG_CONFIG) --sharedir)
+
+POSTGIS_BUILD_DATE=$(shell date $${SOURCE_DATE_EPOCH:+-d @$$SOURCE_DATE_EPOCH} -u "+%Y-%m-%d %H:%M:%S")
+
 install: install-upgrade-paths
 
-# The "next" lines are a cludge to allow upgrading between different
-# revisions of the same version
-install-upgrade-paths:
-	tpl='$(EXTENSION)--ANY--$(EXTVERSION).sql'; \
-	$(INSTALL_DATA) sql/$${tpl} "$(EXTDIR)/$${tpl}"; \
-	ln -fs "$${tpl}" $(EXTDIR)/$(EXTENSION)--$(EXTVERSION)--$(EXTVERSION)next.sql; \
-	ln -fs "$${tpl}" $(EXTDIR)/$(EXTENSION)--$(EXTVERSION)next--$(EXTVERSION).sql; \
-	for OLD_VERSION in $(UPGRADEABLE_VERSIONS); do \
-		ln -fs "$${tpl}" $(EXTDIR)/$(EXTENSION)--$$OLD_VERSION--$(EXTVERSION).sql; \
-	done
+#
+# Install <extension>--<curversion>--ANY.sql
+#     and <extension>--ANY--<curversion>.sql
+# upgrade paths
+#
+# The <curversion>--ANY file will be a symlink ( or copy,
+# on systems not supporting symlinks ) to an empty upgrade template
+# file named <extension>--TEMPLATED--TO--ANY.sql and be overwritten
+# by any future versions of PostGIS, keeping the overall number of
+# upgrade paths down.
+#
+# See https://trac.osgeo.org/postgis/ticket/5092
+#
+install-upgrade-paths: sql/$(TAG_UPGRADE) sql/$(EXTENSION)--ANY--$(EXTVERSION).sql
+	mkdir -p "$(EXTDIR)"
+	$(INSTALL_DATA) "sql/$(EXTENSION)--ANY--$(EXTVERSION).sql" "$(EXTDIR)/$(EXTENSION)--ANY--$(EXTVERSION).sql"
+	$(INSTALL_DATA) "sql/$(TAG_UPGRADE)" "$(EXTDIR)/$(TAG_UPGRADE)"
+	ln -fs "$(TAG_UPGRADE)" "$(EXTDIR)/$(EXTENSION)--$(EXTVERSION)--ANY.sql"
+
+install-extension-upgrades-from-known-versions:
+	$(PERL) $(top_srcdir)/loader/postgis.pl \
+		install-extension-upgrades \
+		--extension $(EXTENSION) \
+		--pg_sharedir $(DESTDIR)$(PG_SHAREDIR) \
+		$(UPGRADEABLE_VERSIONS)
+
+all: sql/$(TAG_UPGRADE)
+
+sql/$(TAG_UPGRADE): $(MAKEFILE_LIST) | sql
+	echo '-- Just tag extension $(EXTENSION) version as "ANY"' > $@
+	echo '-- Installed by $(EXTENSION) $(EXTVERSION)' >> $@
+	echo '-- Built on $(POSTGIS_BUILD_DATE)' >> $@
 
 uninstall: uninstall-upgrade-paths
 
 INSTALLED_UPGRADE_SCRIPTS = \
-	$(wildcard $(EXTDIR)/*$(EXTVERSION).sql) \
-	$(wildcard $(EXTDIR)/*$(EXTVERSION)next.sql) \
+	$(wildcard $(EXTDIR)/$(EXTENSION)--*--$(EXTVERSION).sql) \
+	$(wildcard $(EXTDIR)/$(EXTENSION)--*--ANY.sql) \
 	$(NULL)
 
 uninstall-upgrade-paths:

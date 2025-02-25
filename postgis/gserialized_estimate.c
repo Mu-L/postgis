@@ -28,7 +28,7 @@
  THEORY OF OPERATION
 
 The ANALYZE command hooks to a callback (gserialized_analyze_nd) that
-calculates (compute_gserialized_stats_mode) two histograms of occurances of
+calculates (compute_gserialized_stats_mode) two histograms of occurrences of
 features, once for the 2D domain (and the && operator) one for the
 ND domain (and the &&& operator).
 
@@ -38,7 +38,7 @@ relations. Queries with constant arguments call gserialized_gist_sel,
 queries with relations on both sides call gserialized_gist_joinsel.
 
 gserialized_gist_sel sums up the values in the histogram that overlap
-the contant search box.
+the constant search box.
 
 gserialized_gist_joinsel sums up the product of the overlapping
 cells in each relation's histogram.
@@ -79,10 +79,10 @@ dimensionality cases. (2D geometry) &&& (3D column), etc.
 #include "storage/lmgr.h"
 #include "catalog/namespace.h"
 #include "catalog/indexing.h"
-#if PG_VERSION_NUM >= 100000
+
 #include "utils/regproc.h"
 #include "utils/varlena.h"
-#endif
+
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/snapmgr.h"
@@ -95,11 +95,8 @@ dimensionality cases. (2D geometry) &&& (3D column), etc.
 #include "executor/spi.h"
 #include "fmgr.h"
 #include "commands/vacuum.h"
-#if PG_VERSION_NUM < 120000
-#include "nodes/relation.h"
-#else
 #include "nodes/pathnodes.h"
-#endif
+
 #include "parser/parsetree.h"
 #include "utils/array.h"
 #include "utils/lsyscache.h"
@@ -114,6 +111,7 @@ dimensionality cases. (2D geometry) &&& (3D column), etc.
 
 #include "stringbuffer.h"
 #include "liblwgeom.h"
+#include "lwgeodetic.h"
 #include "lwgeom_pg.h"       /* For debugging macros. */
 #include "gserialized_gist.h" /* For index common functions */
 
@@ -145,13 +143,13 @@ Datum _postgis_gserialized_joinsel(PG_FUNCTION_ARGS);
 Datum _postgis_gserialized_stats(PG_FUNCTION_ARGS);
 
 /* Local prototypes */
-static Oid table_get_spatial_index(Oid tbl_oid, text *col, int *key_type);
-static GBOX * spatial_index_read_extent(Oid idx_oid, int key_type);
+static Oid table_get_spatial_index(Oid tbl_oid, int16 attnum, int *key_type, int16 *idx_attnum);
+static GBOX * spatial_index_read_extent(Oid idx_oid, int idx_att_num, int key_type);
+
 
 /* Other prototypes */
 float8 gserialized_joinsel_internal(PlannerInfo *root, List *args, JoinType jointype, int mode);
 float8 gserialized_sel_internal(PlannerInfo *root, List *args, int varRelid, int mode);
-
 
 /* Old Prototype */
 Datum geometry_estimated_extent(PG_FUNCTION_ARGS);
@@ -244,7 +242,7 @@ typedef struct ND_IBOX_T
 
 /**
 * N-dimensional statistics structure. Well, actually
-* four-dimensional, but set up to handle arbirary dimensions
+* four-dimensional, but set up to handle arbitrary dimensions
 * if necessary (really, we just want to get the 2,3,4-d cases
 * into one shared piece of code).
 */
@@ -292,7 +290,7 @@ typedef struct {
 /**
 * Given that geodetic boxes are X/Y/Z regardless of the
 * underlying geometry dimensionality and other boxes
-* are guided by HAS_Z/HAS_M in their dimesionality,
+* are guided by HAS_Z/HAS_M in their dimensionality,
 * we have a little utility function to make it easy.
 */
 static int
@@ -348,11 +346,21 @@ cmp_int (const void *a, const void *b)
 * The difference between the fourth and first quintile values,
 * the "inter-quintile range"
 */
+// static int
+// range_quintile(int *vals, int nvals)
+// {
+// 	qsort(vals, nvals, sizeof(int), cmp_int);
+// 	return vals[4*nvals/5] - vals[nvals/5];
+// }
+
+/**
+* Lowest and highest bin values
+*/
 static int
-range_quintile(int *vals, int nvals)
+range_full(int *vals, int nvals)
 {
 	qsort(vals, nvals, sizeof(int), cmp_int);
-	return vals[4*nvals/5] - vals[nvals/5];
+	return vals[nvals-1] - vals[0];
 }
 
 /**
@@ -522,28 +530,28 @@ nd_stats_to_json(const ND_STATS *nd_stats)
 * Caller is responsible for freeing.
 * Currently only prints first two dimensions.
 */
-// static char*
-// nd_stats_to_grid(const ND_STATS *stats)
-// {
-//  char *rv;
-//  int j, k;
-//  int sizex = (int)roundf(stats->size[0]);
-//  int sizey = (int)roundf(stats->size[1]);
-//  stringbuffer_t *sb = stringbuffer_create();
-//
-//  for ( k = 0; k < sizey; k++ )
-//  {
-//      for ( j = 0; j < sizex; j++ )
-//      {
-//          stringbuffer_aprintf(sb, "%3d ", (int)roundf(stats->value[j + k*sizex]));
-//      }
-//      stringbuffer_append(sb,  "\n");
-//  }
-//
-//  rv = stringbuffer_getstringcopy(sb);
-//  stringbuffer_destroy(sb);
-//  return rv;
-// }
+static char*
+nd_stats_to_grid(const ND_STATS *stats)
+{
+ char *rv;
+ int j, k;
+ int sizex = (int)roundf(stats->size[0]);
+ int sizey = (int)roundf(stats->size[1]);
+ stringbuffer_t *sb = stringbuffer_create();
+
+ for ( k = 0; k < sizey; k++ )
+ {
+     for ( j = 0; j < sizex; j++ )
+     {
+         stringbuffer_aprintf(sb, "%3d ", (int)roundf(stats->value[j + k*sizex]));
+     }
+     stringbuffer_append(sb,  "\n");
+ }
+
+ rv = stringbuffer_getstringcopy(sb);
+ stringbuffer_destroy(sb);
+ return rv;
+}
 
 
 /** Expand the bounds of target to include source */
@@ -759,10 +767,11 @@ nd_box_ratio(const ND_BOX *b1, const ND_BOX *b2, int ndims)
 }
 
 /* How many bins shall we use in figuring out the distribution? */
-#define NUM_BINS 50
+#define MAX_NUM_BINS 50
+#define BIN_MIN_SIZE 10
 
 /**
-* Calculate how much a set of boxes is homogenously distributed
+* Calculate how much a set of boxes is homogeneously distributed
 * or contentrated within one dimension, returning the range_quintile of
 * of the overlap counts per cell in a uniform
 * partition of the extent of the dimension.
@@ -780,7 +789,7 @@ static int
 nd_box_array_distribution(const ND_BOX **nd_boxes, int num_boxes, const ND_BOX *extent, int ndims, double *distribution)
 {
 	int d, i, k, range;
-	int counts[NUM_BINS];
+	int *counts;
 	double smin, smax;   /* Spatial min, spatial max */
 	double swidth;       /* Spatial width of dimension */
 #if POSTGIS_DEBUG_LEVEL >= 3
@@ -789,11 +798,15 @@ nd_box_array_distribution(const ND_BOX **nd_boxes, int num_boxes, const ND_BOX *
 	int   bmin, bmax;   /* Bin min, bin max */
 	const ND_BOX *ndb;
 
+	int num_bins = Min(Max(2, num_boxes/BIN_MIN_SIZE), MAX_NUM_BINS);
+	counts = palloc0(num_bins * sizeof(int));
+
 	/* For each dimension... */
 	for ( d = 0; d < ndims; d++ )
 	{
 		/* Initialize counts for this dimension */
-		memset(counts, 0, sizeof(counts));
+		memset(counts, 0, num_bins * sizeof(int));
+
 
 		smin = extent->min[d];
 		smax = extent->max[d];
@@ -831,12 +844,12 @@ nd_box_array_distribution(const ND_BOX **nd_boxes, int num_boxes, const ND_BOX *
 			}
 
 			/* What bins does this range correspond to? */
-			bmin = floor(NUM_BINS * minoffset / swidth);
-			bmax = floor(NUM_BINS * maxoffset / swidth);
+			bmin = floor(num_bins * minoffset / swidth);
+			bmax = floor(num_bins * maxoffset / swidth);
 
 			/* Should only happen when maxoffset==swidth */
-			if (bmax >= NUM_BINS)
-				bmax = NUM_BINS-1;
+			if (bmax >= num_bins)
+				bmax = num_bins-1;
 
 			POSTGIS_DEBUGF(4, " dimension %d, feature %d: bin %d to bin %d", d, i, bmin, bmax);
 
@@ -849,11 +862,12 @@ nd_box_array_distribution(const ND_BOX **nd_boxes, int num_boxes, const ND_BOX *
 		}
 
 		/* How dispersed is the distribution of features across bins? */
-		range = range_quintile(counts, NUM_BINS);
+		// range = range_quintile(counts, num_bins);
+		range = range_full(counts, num_bins);
 
 #if POSTGIS_DEBUG_LEVEL >= 3
-		average = avg(counts, NUM_BINS);
-		sdev = stddev(counts, NUM_BINS);
+		average = avg(counts, num_bins);
+		sdev = stddev(counts, num_bins);
 		sdev_ratio = sdev/average;
 
 		POSTGIS_DEBUGF(3, " dimension %d: range = %d", d, range);
@@ -864,6 +878,8 @@ nd_box_array_distribution(const ND_BOX **nd_boxes, int num_boxes, const ND_BOX *
 
 		distribution[d] = range;
 	}
+
+	pfree(counts);
 
 	return true;
 }
@@ -907,28 +923,6 @@ pg_nd_stats_from_tuple(HeapTuple stats_tuple, int mode)
 	if ( mode == 2 ) stats_kind = STATISTIC_KIND_2D;
 
     /* Then read the geom status histogram from that */
-
-#if POSTGIS_PGSQL_VERSION < 100
-	{
-		float4 *floatptr;
-		int nvalues;
-
-		rv = get_attstatsslot(stats_tuple, 0, 0, stats_kind, InvalidOid,
-							NULL, NULL, NULL, &floatptr, &nvalues);
-
-		if ( ! rv ) {
-			POSTGIS_DEBUGF(2, "no slot of kind %d in stats tuple", stats_kind);
-			return NULL;
-		}
-
-		/* Clone the stats here so we can release the attstatsslot immediately */
-		nd_stats = palloc(sizeof(float) * nvalues);
-		memcpy(nd_stats, floatptr, sizeof(float) * nvalues);
-
-		/* Clean up */
-		free_attstatsslot(0, NULL, 0, floatptr, nvalues);
-	}
-#else /* PostgreSQL 10 or higher */
 	{
 		AttStatsSlot sslot;
 		rv = get_attstatsslot(&sslot, stats_tuple, stats_kind, InvalidOid,
@@ -944,8 +938,6 @@ pg_nd_stats_from_tuple(HeapTuple stats_tuple, int mode)
 
 		free_attstatsslot(&sslot);
 	}
-#endif
-
 	return nd_stats;
 }
 
@@ -997,8 +989,8 @@ pg_get_nd_stats(const Oid table_oid, AttrNumber att_num, int mode, bool only_par
 * Pull the stats object from the PgSQL system catalogs. The
 * debugging functions are taking human input (table names)
 * and columns, so we have to look those up first.
-* In case of parent tables whith INHERITS, when "only_parent"
-* is true this function only searchs for stats in the parent
+* In case of parent tables with INHERITS, when "only_parent"
+* is true this function only searches for stats in the parent
 * table ignoring any statistic collected from the children.
 */
 static ND_STATS*
@@ -1091,8 +1083,8 @@ estimate_join_selectivity(const ND_STATS *s1, const ND_STATS *s2)
 
 	/* Q: What's the largest possible join size these relations can create? */
 	/* A: The product of the # of non-null rows in each relation. */
-	ntuples_not_null1 = s1->table_features * (s1->not_null_features / s1->sample_features);
-	ntuples_not_null2 = s2->table_features * (s2->not_null_features / s2->sample_features);
+	ntuples_not_null1 = s1->table_features * ((double)s1->not_null_features / s1->sample_features);
+	ntuples_not_null2 = s2->table_features * ((double)s2->not_null_features / s2->sample_features);
 	ntuples_max = ntuples_not_null1 * ntuples_not_null2;
 
 	/* Get the ndims as ints */
@@ -1517,32 +1509,26 @@ compute_gserialized_stats_mode(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfu
 	}
 
 	/*
-	 * We'll build a histogram having stats->attr->attstattarget cells
-	 * on each side,  within reason... we'll use ndims*10000 as the
-	 * maximum number of cells.
+	 * We'll build a histogram having stats->attr->attstattarget
+	 * (default 100) cells on each side,  within reason...
+	 * we'll use ndims*100000 as the maximum number of cells.
 	 * Also, if we're sampling a relatively small table, we'll try to ensure that
-	 * we have an average of 5 features for each cell so the histogram isn't
-	 * so sparse.
+	 * we have a smaller grid.
 	 */
+#if POSTGIS_PGSQL_VERSION >= 170
+	histo_cells_target = (int)pow((double)(stats->attstattarget), (double)ndims);
+	POSTGIS_DEBUGF(3, " stats->attstattarget: %d", stats->attstattarget);
+#else
 	histo_cells_target = (int)pow((double)(stats->attr->attstattarget), (double)ndims);
-	histo_cells_target = Min(histo_cells_target, ndims * 10000);
-	histo_cells_target = Min(histo_cells_target, (int)(total_rows/5));
 	POSTGIS_DEBUGF(3, " stats->attr->attstattarget: %d", stats->attr->attstattarget);
+#endif
+	histo_cells_target = Min(histo_cells_target, ndims * 100000);
+	histo_cells_target = Min(histo_cells_target, (int)(10 * ndims * total_rows));
 	POSTGIS_DEBUGF(3, " target # of histogram cells: %d", histo_cells_target);
 
 	/* If there's no useful features, we can't work out stats */
 	if ( ! notnull_cnt )
 	{
-#if POSTGIS_DEBUG_LEVEL > 0
-		Oid relation_oid = stats->attr->attrelid;
-		char *relation_name = get_rel_name(relation_oid);
-		char *namespace = get_namespace_name(get_rel_namespace(relation_oid));
-		elog(DEBUG1,
-		     "PostGIS: Unable to compute statistics for \"%s.%s.%s\": No non-null/empty features",
-		     namespace ? namespace : "(NULL)",
-		     relation_name ? relation_name : "(NULL)",
-		     stats->attr->attname.data);
-#endif /* POSTGIS_DEBUG_LEVEL > 0 */
 		stats->stats_valid = false;
 		return;
 	}
@@ -1608,7 +1594,7 @@ compute_gserialized_stats_mode(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfu
 	 * So, we instead calculate how much features overlap
 	 * each other in their dimension to figure out which
 	 *  dimensions have useful selectivity characteristics (more
-	 * variability in density) and therefor would find
+	 * variability in density) and therefore would find
 	 * more cells useful (to distinguish between dense places and
 	 * homogeneous places).
 	 */
@@ -1677,7 +1663,7 @@ compute_gserialized_stats_mode(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfu
 				 * then take the appropriate root to get the estimated number of cells
 				 * on this axis (eg, pow(0.5) for 2d, pow(0.333) for 3d, pow(0.25) for 4d)
 				*/
-				histo_size[d] = (int)pow(histo_cells_target * histo_ndims * edge_ratio, 1/(double)histo_ndims);
+				histo_size[d] = (int)pow((double)histo_cells_target * histo_ndims * edge_ratio, 1/(double)histo_ndims);
 				/* If something goes awry, just give this dim one slot */
 				if ( ! histo_size[d] )
 					histo_size[d] = 1;
@@ -1728,7 +1714,6 @@ compute_gserialized_stats_mode(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfu
 		const ND_BOX *nd_box;
 		ND_IBOX nd_ibox;
 		int at[ND_DIMS];
-		int d;
 		double num_cells = 0;
 		double min[ND_DIMS] = {0.0, 0.0, 0.0, 0.0};
 		double max[ND_DIMS] = {0.0, 0.0, 0.0, 0.0};
@@ -1758,7 +1743,7 @@ compute_gserialized_stats_mode(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfu
 		}
 
 		/*
-		 * Move through all the overlaped histogram cells values and
+		 * Move through all the overlapped histogram cells values and
 		 * add the box overlap proportion to them.
 		 */
 		do
@@ -1889,7 +1874,7 @@ compute_gserialized_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 *
 * It will need to return a stats builder function reference
 * and a "minimum" sample rows to feed it.
-* If we want analisys to be completely skipped we can return
+* If we want analysis to be completely skipped we can return
 * false and leave output vals untouched.
 *
 * What we know from this call is:
@@ -1984,6 +1969,8 @@ estimate_selectivity(const GBOX *box, const ND_STATS *nd_stats, int mode)
 	POSTGIS_DEBUGF(3, " nd_stats->extent: %s", nd_box_to_json(&(nd_stats->extent), nd_stats->ndims));
 	POSTGIS_DEBUGF(3, " nd_box: %s", nd_box_to_json(&(nd_box), gbox_ndims(box)));
 
+	// elog(DEBUG1, "out histogram:\n%s", nd_stats_to_grid(nd_stats));
+
 	/*
 	 * Search box completely misses histogram extent?
 	 * We have to intersect in all N dimensions or else we have
@@ -2041,7 +2028,7 @@ estimate_selectivity(const GBOX *box, const ND_STATS *nd_stats, int mode)
 		cell_count = nd_stats->value[nd_stats_value_index(nd_stats, at)];
 
 		/* Add the pro-rated count for this cell to the overall total */
-		total_count += cell_count * ratio;
+		total_count += (double)cell_count * ratio;
 		POSTGIS_DEBUGF(4, " cell (%d,%d), cell value %.6f, ratio %.6f", at[0], at[1], cell_count, ratio);
 	}
 	while ( nd_increment(&nd_ibox, nd_stats->ndims, at) );
@@ -2088,10 +2075,12 @@ Datum _postgis_gserialized_stats(PG_FUNCTION_ARGS)
 		elog(ERROR, "stats for \"%s.%s\" do not exist", get_rel_name(table_oid), text_to_cstring(att_text));
 
 	/* Convert to JSON */
+	elog(DEBUG1, "stats grid:\n%s", nd_stats_to_grid(nd_stats));
 	str = nd_stats_to_json(nd_stats);
 	json = cstring_to_text(str);
 	pfree(str);
 	pfree(nd_stats);
+
 	PG_RETURN_TEXT_P(json);
 }
 
@@ -2291,204 +2280,156 @@ Datum gserialized_gist_sel(PG_FUNCTION_ARGS)
 	PG_RETURN_FLOAT8(selectivity);
 }
 
-
-
-/**
- * Return the estimated extent of the table
- * looking at gathered statistics (or NULL if
- * no statistics have been gathered).
- */
-PG_FUNCTION_INFO_V1(gserialized_estimated_extent);
-Datum gserialized_estimated_extent(PG_FUNCTION_ARGS)
-{
-	char *nsp = NULL;
-	char *tbl = NULL;
-	text *col = NULL;
-	char *nsp_tbl = NULL;
-	Oid tbl_oid, idx_oid = 0;
-	ND_STATS *nd_stats;
-	GBOX *gbox = NULL;
-	bool only_parent = false;
-	int key_type;
-
-	/* We need to initialize the internal cache to access it later via postgis_oid() */
-	postgis_initialize_cache();
-
-	if ( PG_NARGS() == 4 )
-	{
-		nsp = text_to_cstring(PG_GETARG_TEXT_P(0));
-		tbl = text_to_cstring(PG_GETARG_TEXT_P(1));
-		col = PG_GETARG_TEXT_P(2);
-		only_parent = PG_GETARG_BOOL(3);
-		nsp_tbl = palloc(strlen(nsp) + strlen(tbl) + 6);
-		sprintf(nsp_tbl, "\"%s\".\"%s\"", nsp, tbl);
-		tbl_oid = DatumGetObjectId(DirectFunctionCall1(regclassin, CStringGetDatum(nsp_tbl)));
-		pfree(nsp_tbl);
-	}
-	else if ( PG_NARGS() == 3 )
-	{
-		nsp = text_to_cstring(PG_GETARG_TEXT_P(0));
-		tbl = text_to_cstring(PG_GETARG_TEXT_P(1));
-		col = PG_GETARG_TEXT_P(2);
-		nsp_tbl = palloc(strlen(nsp) + strlen(tbl) + 6);
-		sprintf(nsp_tbl, "\"%s\".\"%s\"", nsp, tbl);
-		tbl_oid = DatumGetObjectId(DirectFunctionCall1(regclassin, CStringGetDatum(nsp_tbl)));
-		pfree(nsp_tbl);
-	}
-	else if ( PG_NARGS() == 2 )
-	{
-		tbl = text_to_cstring(PG_GETARG_TEXT_P(0));
-		col = PG_GETARG_TEXT_P(1);
-		nsp_tbl = palloc(strlen(tbl) + 3);
-		sprintf(nsp_tbl, "\"%s\"", tbl);
-		tbl_oid = DatumGetObjectId(DirectFunctionCall1(regclassin, CStringGetDatum(nsp_tbl)));
-		pfree(nsp_tbl);
-	}
-	else
-	{
-		elog(ERROR, "estimated_extent() called with wrong number of arguments");
-		PG_RETURN_NULL();
-	}
-
-	/* Read the extent from the head of the spatial index, if there is one */
-#if 1
-	idx_oid = table_get_spatial_index(tbl_oid, col, &key_type);
-#endif
-	if (idx_oid)
-	{
-		/* TODO: how about only_parent ? */
-		gbox = spatial_index_read_extent(idx_oid, key_type);
-		POSTGIS_DEBUGF(2, "index for \"%s.%s\" exists, reading gbox from there", tbl, text_to_cstring(col));
-		if ( ! gbox ) PG_RETURN_NULL();
-	}
-	else
-	{
-		POSTGIS_DEBUGF(2, "index for \"%s.%s\" does not exist", tbl, text_to_cstring(col));
-
-		/* Fall back to reading the stats, if no index is found */
-
-		/* Estimated extent only returns 2D bounds, so use mode 2 */
-		nd_stats = pg_get_nd_stats_by_name(tbl_oid, col, 2, only_parent);
-
-		/* Error out on no stats */
-		if ( ! nd_stats ) {
-			elog(WARNING, "stats for \"%s.%s\" do not exist", tbl, text_to_cstring(col));
-			PG_RETURN_NULL();
-		}
-
-		/* Construct the box */
-		gbox = palloc(sizeof(GBOX));
-		FLAGS_SET_GEODETIC(gbox->flags, 0);
-		FLAGS_SET_Z(gbox->flags, 0);
-		FLAGS_SET_M(gbox->flags, 0);
-		gbox->xmin = nd_stats->extent.min[0];
-		gbox->xmax = nd_stats->extent.max[0];
-		gbox->ymin = nd_stats->extent.min[1];
-		gbox->ymax = nd_stats->extent.max[1];
-		pfree(nd_stats);
-	}
-
-	PG_RETURN_POINTER(gbox);
-}
-
-/**
- * Return the estimated extent of the table
- * looking at gathered statistics (or NULL if
- * no statistics have been gathered).
- */
-
-PG_FUNCTION_INFO_V1(geometry_estimated_extent);
-Datum geometry_estimated_extent(PG_FUNCTION_ARGS)
-{
-	if ( PG_NARGS() == 3 )
-	{
-	    PG_RETURN_DATUM(
-	    DirectFunctionCall3(gserialized_estimated_extent,
-	    PG_GETARG_DATUM(0),
-	    PG_GETARG_DATUM(1),
-        PG_GETARG_DATUM(2)));
-	}
-	else if ( PG_NARGS() == 2 )
-	{
-	    PG_RETURN_DATUM(
-	    DirectFunctionCall2(gserialized_estimated_extent,
-	    PG_GETARG_DATUM(0),
-	    PG_GETARG_DATUM(1)));
-	}
-
-	elog(ERROR, "geometry_estimated_extent() called with wrong number of arguments");
-	PG_RETURN_NULL();
-}
-
 /************************************************************************/
 
-static Oid
-table_get_spatial_index(Oid tbl_oid, text *col, int *key_type)
+
+/*
+ * Given an index and table column, confirm the
+ * index was built on that column, and return the
+ * corresponding index attribute for that column.
+ */
+static int16
+index_has_attr(Oid index_oid, Oid table_oid, int16 table_attnum)
 {
-	Relation tbl_rel;
+	HeapTuple index_tuple;
+	Form_pg_index index_form;
+	int16 index_attnum = InvalidAttrNumber;
+
+	/* Check if the index is on the desired column */
+	index_tuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(index_oid));
+	if (!HeapTupleIsValid(index_tuple))
+		elog(ERROR, "cache lookup failed for index %u", index_oid);
+
+	index_form = (Form_pg_index) GETSTRUCT(index_tuple);
+
+	/* Something went wrong, this index isn't on our table of interest */
+	if (index_form->indrelid != table_oid)
+		elog(ERROR, "table=%u and index=%u are not related", table_oid, index_oid);
+
+	/* Check if the attnum is in the indkey array */
+	for (int16 i = 0; i < index_form->indkey.dim1; i++)
+	{
+		if (index_form->indkey.values[i] == table_attnum)
+		{
+			index_attnum = i+1;
+			break;
+	    }
+	}
+	ReleaseSysCache(index_tuple);
+	return index_attnum;
+}
+
+
+/*
+ * Given an index return the access method.
+ * (We only work with GIST access method.)
+ */
+static int
+index_get_am(Oid index_oid)
+{
+	int index_am;
+	Form_pg_class index_rel_form;
+	HeapTuple index_rel_tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(index_oid));
+
+	if (!HeapTupleIsValid(index_rel_tuple))
+		elog(ERROR, "cache lookup failed for index %u", index_oid);
+
+	index_rel_form = (Form_pg_class) GETSTRUCT(index_rel_tuple);
+	index_am = index_rel_form->relam;
+	ReleaseSysCache(index_rel_tuple);
+	return index_am;
+}
+
+
+/*
+ * Given an index and index attribute, lookup the
+ * key type (box2df or gidx) of that index column.
+ */
+static int
+index_get_keytype (Oid index_oid, int16 index_attnum)
+{
+	Oid atttypid = InvalidOid;
+	Form_pg_attribute att_form;
+
+	/* Get the key type for the index key? */
+	HeapTuple att_tuple = SearchSysCache2(ATTNUM,
+		ObjectIdGetDatum(index_oid),
+		Int16GetDatum(index_attnum));
+
+	if (!HeapTupleIsValid(att_tuple))
+		elog(ERROR, "cache lookup failed for index %u attribute %d", index_oid, index_attnum);
+
+	att_form = (Form_pg_attribute) GETSTRUCT(att_tuple);
+	atttypid = att_form->atttypid;
+	ReleaseSysCache(att_tuple);
+	return atttypid;
+}
+
+
+/*
+ * Given a table and attribute number, find any
+ * "spatial index" of that attribute. For our purposes
+ * a spatial index is one we can read the top page of,
+ * namely a geometry or geography column, with
+ * a GIST index having either a gidx or box2df key.
+ */
+static Oid
+table_get_spatial_index(Oid table_oid, int16 attnum, int *key_type, int16 *idx_attnum)
+{
+	Relation table_rel;
+	List *index_list;
 	ListCell *lc;
-	List *idx_list;
-	Oid result = InvalidOid;
-	char *colname = text_to_cstring(col);
 
 	/* Lookup our spatial index key types */
 	Oid b2d_oid = postgis_oid(BOX2DFOID);
-	Oid gdx_oid = postgis_oid(BOX3DOID);
+	Oid gdx_oid = postgis_oid(GIDXOID);
 
 	if (!(b2d_oid && gdx_oid))
 		return InvalidOid;
 
-	tbl_rel = RelationIdGetRelation(tbl_oid);
-	idx_list = RelationGetIndexList(tbl_rel);
-	RelationClose(tbl_rel);
+	/* Read a list of all indexes on this table */
+	table_rel = RelationIdGetRelation(table_oid);
+	index_list = RelationGetIndexList(table_rel);
+	RelationClose(table_rel);
 
 	/* For each index associated with this table... */
-	foreach(lc, idx_list)
+	foreach(lc, index_list)
 	{
-		Form_pg_class idx_form;
-		HeapTuple idx_tup;
-		int idx_relam;
-		Oid idx_oid = lfirst_oid(lc);
+		Oid index_oid = lfirst_oid(lc);
+		Oid atttypid;
 
-		idx_tup = SearchSysCache1(RELOID, ObjectIdGetDatum(idx_oid));
-		if (!HeapTupleIsValid(idx_tup))
-			elog(ERROR, "%s: unable to lookup index %u in syscache", __func__, idx_oid);
-		idx_form = (Form_pg_class) GETSTRUCT(idx_tup);
-		idx_relam = idx_form->relam;
-		ReleaseSysCache(idx_tup);
+		/* Is our attribute indexed by this index? */
+		*idx_attnum = index_has_attr(index_oid, table_oid, attnum);
 
-		/* Does the index use a GIST access method? */
-		if (idx_relam == GIST_AM_OID)
+		/* No, move on */
+		if (*idx_attnum == InvalidAttrNumber)
+			continue;
+
+		/* We only handle GIST spatial indexes */
+		if (index_get_am(index_oid) != GIST_AM_OID)
+			continue;
+
+		/* Is the column actually spatial? */
+		/* Only if it uses our spatial key types */
+		atttypid = index_get_keytype (index_oid, *idx_attnum);
+		if (atttypid == b2d_oid || atttypid == gdx_oid)
 		{
-			Form_pg_attribute att;
-			Oid atttypid;
-			/* Is the index on the column name we are looking for? */
-			HeapTuple att_tup = SearchSysCache2(ATTNAME,
-			                                    ObjectIdGetDatum(idx_oid),
-			                                    PointerGetDatum(colname));
-			if (!HeapTupleIsValid(att_tup))
-				continue;
-
-			att = (Form_pg_attribute) GETSTRUCT(att_tup);
-			atttypid = att->atttypid;
-			ReleaseSysCache(att_tup);
-
-			/* Is the column actually spatial? */
-			if (b2d_oid == atttypid || gdx_oid == atttypid)
-			{
-				/* Save result, clean up, and break out */
-				result = idx_oid;
-				if (key_type)
-					*key_type = (atttypid == b2d_oid ? STATISTIC_KIND_2D : STATISTIC_KIND_ND);
-				break;
-			}
+			/* Spatial key found in this index! */
+			*key_type = (atttypid == b2d_oid ? STATISTIC_KIND_2D : STATISTIC_KIND_ND);
+			return index_oid;
 		}
 	}
-	return result;
+	return InvalidOid;
 }
 
+/*
+ * Given an index and indexed attribute, look up
+ * the keys in the top page of the index, and using
+ * the appropriate key type, return a box that is the
+ * union of all those keys.
+ */
 static GBOX *
-spatial_index_read_extent(Oid idx_oid, int key_type)
+spatial_index_read_extent(Oid idx_oid, int idx_att_num, int key_type)
 {
 	BOX2DF *bounds_2df = NULL;
 	GIDX *bounds_gidx = NULL;
@@ -2496,7 +2437,7 @@ spatial_index_read_extent(Oid idx_oid, int key_type)
 	Relation idx_rel;
 	Buffer buffer;
 	Page page;
-	OffsetNumber offset;
+	unsigned long offset;
 	unsigned long offset_max;
 
 	if (!idx_oid)
@@ -2521,7 +2462,7 @@ spatial_index_read_extent(Oid idx_oid, int key_type)
 		if (!GistTupleIsInvalid(ituple))
 		{
 			bool isnull;
-			Datum idx_attr = index_getattr(ituple, 1, idx_rel->rd_att, &isnull);
+			Datum idx_attr = index_getattr(ituple, idx_att_num, idx_rel->rd_att, &isnull);
 			if (!isnull)
 			{
 				if (key_type == STATISTIC_KIND_2D)
@@ -2557,10 +2498,13 @@ spatial_index_read_extent(Oid idx_oid, int key_type)
 	}
 	else if (key_type == STATISTIC_KIND_ND && bounds_gidx)
 	{
+		lwflags_t flags = 0;
 		if (gidx_is_unknown(bounds_gidx))
 			return NULL;
-		gbox = gbox_new(0);
-		gbox_from_gidx(bounds_gidx, gbox, 0);
+		FLAGS_SET_Z(flags, GIDX_NDIMS(bounds_gidx) > 2);
+		FLAGS_SET_M(flags, GIDX_NDIMS(bounds_gidx) > 3);
+		gbox = gbox_new(flags);
+		gbox_from_gidx(bounds_gidx, gbox, flags);
 	}
 	else
 		return NULL;
@@ -2580,8 +2524,9 @@ Datum _postgis_gserialized_index_extent(PG_FUNCTION_ARGS)
 {
 	GBOX *gbox = NULL;
 	int key_type;
+	int16 att_num, idx_att_num = InvalidAttrNumber;
 	Oid tbl_oid = PG_GETARG_DATUM(0);
-	text *col = PG_GETARG_TEXT_P(1);
+	char *col = text_to_cstring(PG_GETARG_TEXT_P(1));
 	Oid idx_oid;
 
 	if(!tbl_oid)
@@ -2590,14 +2535,194 @@ Datum _postgis_gserialized_index_extent(PG_FUNCTION_ARGS)
 	/* We need to initialize the internal cache to access it later via postgis_oid() */
 	postgis_initialize_cache();
 
-	idx_oid = table_get_spatial_index(tbl_oid, col, &key_type);
+	att_num = get_attnum(tbl_oid, col);
+	if (att_num == InvalidAttrNumber)
+		PG_RETURN_NULL();
+
+	idx_oid = table_get_spatial_index(tbl_oid, att_num, &key_type, &idx_att_num);
 	if (!idx_oid)
 		PG_RETURN_NULL();
 
-	gbox = spatial_index_read_extent(idx_oid, key_type);
+	gbox = spatial_index_read_extent(idx_oid, idx_att_num, key_type);
 	if (!gbox)
 		PG_RETURN_NULL();
 	else
 		PG_RETURN_POINTER(gbox);
 }
 
+
+/*
+ * Given a table and column name, look up the attribute number
+ * and type of that column.
+ */
+static bool
+get_attnum_attypid(Oid table_oid, const char *col, int16 *attnum, Oid *atttypid)
+{
+	HeapTuple att_tuple;
+	Form_pg_attribute att;
+
+	if (!attnum || !atttypid)
+		elog(ERROR, "%s got null input parameters", __func__);
+
+	/* Is the index on the column name we are looking for? */
+	att_tuple = SearchSysCache2(ATTNAME,
+		ObjectIdGetDatum(table_oid),
+		PointerGetDatum(col));
+
+	if (!HeapTupleIsValid(att_tuple))
+		return false;
+
+	att = (Form_pg_attribute) GETSTRUCT(att_tuple);
+	*atttypid = att->atttypid;
+	*attnum = att->attnum;
+	ReleaseSysCache(att_tuple);
+	return true;
+}
+
+
+/**
+ * Return the estimated extent of the table
+ * looking at gathered statistics (or NULL if
+ * no statistics have been gathered).
+ */
+PG_FUNCTION_INFO_V1(gserialized_estimated_extent);
+Datum gserialized_estimated_extent(PG_FUNCTION_ARGS)
+{
+	text *coltxt = NULL;
+	char *col = NULL;
+	int16 attnum, idx_attnum;
+	Oid atttypid = InvalidOid;
+	char nsp_tbl[NAMEDATALEN];
+	char *tbl;
+	Oid tbl_oid, idx_oid = 0;
+	ND_STATS *nd_stats;
+	GBOX *gbox = NULL;
+	bool only_parent = false;
+	int key_type;
+	Oid geographyOid = postgis_oid(GEOGRAPHYOID);
+	Oid geometryOid = postgis_oid(GEOMETRYOID);
+
+	/* We need to initialize the internal cache to access it later via postgis_oid() */
+	postgis_initialize_cache();
+
+	if (PG_NARGS() < 2 || PG_NARGS() > 4)
+		elog(ERROR, "ST_EstimatedExtent() called with wrong number of arguments");
+
+	if ( PG_NARGS() == 4 )
+	{
+		only_parent = PG_GETARG_BOOL(3);
+	}
+	if ( PG_NARGS() >= 3 )
+	{
+		char *nsp = text_to_cstring(PG_GETARG_TEXT_P(0));
+		tbl = text_to_cstring(PG_GETARG_TEXT_P(1));
+		coltxt = PG_GETARG_TEXT_P(2);
+		snprintf(nsp_tbl, NAMEDATALEN, "\"%s\".\"%s\"", nsp, tbl);
+	}
+	if ( PG_NARGS() == 2 )
+	{
+		tbl = text_to_cstring(PG_GETARG_TEXT_P(0));
+		coltxt = PG_GETARG_TEXT_P(1);
+		snprintf(nsp_tbl, NAMEDATALEN, "\"%s\"", tbl);
+	}
+
+	/* Parse the namespace/table strings and lookup in system catalogs */
+	tbl_oid = DatumGetObjectId(DirectFunctionCall1(regclassin, CStringGetDatum(nsp_tbl)));
+	if (!tbl_oid)
+		elog(ERROR, "cannot lookup table %s", nsp_tbl);
+
+    /* Get the attribute number and type from the column name */
+    col = text_to_cstring(coltxt);
+    if (!get_attnum_attypid(tbl_oid, col, &attnum, &atttypid))
+        elog(ERROR, "column %s.\"%s\" does not exist", nsp_tbl, col);
+
+    /* We can only do estimates on geograpy and geometry */
+    if ((atttypid != geographyOid) && (atttypid != geometryOid))
+    {
+        elog(ERROR, "column %s.\"%s\" must be a geometry or geography", nsp_tbl, col);
+    }
+
+	/* Read the extent from the head of the spatial index */
+	/* works if there is a spatial index */
+	idx_oid = table_get_spatial_index(tbl_oid, attnum, &key_type, &idx_attnum);
+	if (idx_oid != InvalidOid)
+	{
+		/* TODO: how about only_parent ? */
+		gbox = spatial_index_read_extent(idx_oid, idx_attnum, key_type);
+		elog(DEBUG3, "index for %s.\"%s\" exists, reading gbox from there", nsp_tbl, col);
+		if (!gbox) PG_RETURN_NULL();
+	}
+	/* Read the extent from the stats tables, */
+	/* works if ANALYZE has been run */
+	else
+	{
+		int stats_mode = 2;
+		elog(DEBUG3, "index for %s.\"%s\" does not exist", nsp_tbl, col);
+
+		/* For a geography column, we need the XYZ geocentric bounds */
+		if (atttypid == geographyOid)
+			stats_mode = 3;
+
+		/* ND stats include an extent for the histogram */
+		nd_stats = pg_get_nd_stats_by_name(tbl_oid, coltxt, stats_mode, only_parent);
+
+		/* Error out on no stats */
+		if (!nd_stats)
+		{
+			elog(WARNING, "stats for \"%s.%s\" do not exist", tbl, col);
+			PG_RETURN_NULL();
+		}
+
+		/* Construct the box */
+		gbox = gbox_new(0);
+		gbox->xmin = nd_stats->extent.min[0];
+		gbox->xmax = nd_stats->extent.max[0];
+		gbox->ymin = nd_stats->extent.min[1];
+		gbox->ymax = nd_stats->extent.max[1];
+		if (stats_mode != 2)
+		{
+			FLAGS_SET_Z(gbox->flags, 1);
+			gbox->zmin = nd_stats->extent.min[2];
+			gbox->zmax = nd_stats->extent.max[2];
+		}
+
+		pfree(nd_stats);
+	}
+
+	/* Convert geocentric geography box into a planar box */
+	/* that users understand */
+	if (atttypid == geographyOid)
+	{
+		GBOX *gbox_planar = gbox_new(0);
+		gbox_geocentric_get_gbox_cartesian(gbox, gbox_planar);
+		PG_RETURN_POINTER(gbox_planar);
+	}
+	else
+		PG_RETURN_POINTER(gbox);
+}
+
+/*
+ * Legacy prototype for Estimated_Extent()
+ */
+PG_FUNCTION_INFO_V1(geometry_estimated_extent);
+Datum geometry_estimated_extent(PG_FUNCTION_ARGS)
+{
+    if ( PG_NARGS() == 3 )
+    {
+        PG_RETURN_DATUM(
+        DirectFunctionCall3(gserialized_estimated_extent,
+        PG_GETARG_DATUM(0),
+        PG_GETARG_DATUM(1),
+        PG_GETARG_DATUM(2)));
+    }
+    else if ( PG_NARGS() == 2 )
+    {
+        PG_RETURN_DATUM(
+        DirectFunctionCall2(gserialized_estimated_extent,
+        PG_GETARG_DATUM(0),
+        PG_GETARG_DATUM(1)));
+    }
+
+    elog(ERROR, "geometry_estimated_extent() called with wrong number of arguments");
+    PG_RETURN_NULL();
+}

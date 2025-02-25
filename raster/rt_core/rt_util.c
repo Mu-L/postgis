@@ -106,7 +106,10 @@ rt_util_gdal_resample_alg(const char *algname) {
 		return GRA_Cubic;
 	else if (strcmp(algname, "LANCZOS") == 0)
 		return GRA_Lanczos;
-
+	else if (strcmp(algname, "MAX") == 0)
+		return GRA_Max;
+	else if (strcmp(algname, "MIN") == 0)
+		return GRA_Min;
 	return GRA_NearestNeighbour;
 }
 
@@ -325,8 +328,6 @@ int rt_util_gdal_configured(void) {
 	if (!rt_util_gdal_supported_sr("EPSG:4267"))
 		return 0;
 	if (!rt_util_gdal_supported_sr("EPSG:3310"))
-		return 0;
-	if (!rt_util_gdal_supported_sr("EPSG:2163"))
 		return 0;
 
 	return 1;

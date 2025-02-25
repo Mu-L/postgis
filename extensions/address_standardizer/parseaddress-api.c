@@ -308,8 +308,8 @@ ADDRESS *parseaddress(HHash *stH, char *s, int *reterr)
      *
      * and a trailing letter might be [NSEW] which predir can also be
      *
-     * So it is ambigious whether a directional between street and city
-     * belongs to which component. Futher since the the street and the city
+     * So it is ambiguous whether a directional between street and city
+     * belongs to which component. Further since the the street and the city
      * are both just a string of arbitrary words, it is difficult if not
      * impossible to determine if an give word belongs to sone side or the
      * other.
@@ -331,7 +331,7 @@ ADDRESS *parseaddress(HHash *stH, char *s, int *reterr)
     rc = match((char *)regx, s, ovect, 0);
     if (rc <= 0) {
         /* look for state specific regex */
-        mi++;
+        mi = mi + 1;
         regx = (char *) get_state_regex(ret->st);
         if (regx)
             rc = match((char *)regx, s, ovect, 0);

@@ -10,8 +10,7 @@ MODULEPATH    = $$libdir/$(EXTENSION)-@POSTGIS_MAJOR_VERSION@
 EXTENSION_SCRIPTS = \
 	extlock.sql \
 	sql/topology.sql \
-	sql_bits/mark_editable_objects.sql.in \
-	sql/topology_comments.sql
+	sql_bits/mark_editable_objects.sql.in
 
 ifeq (@LIBINCLUDEMINORVERSION@,yes)
 MODULEPATH=$$libdir/$(EXTENSION)-$(MINORVERSION)
@@ -46,7 +45,6 @@ EXTENSION_UPGRADE_SCRIPTS = \
 	sql_bits/remove_from_extension.sql.in \
 	sql/topology_upgrade.sql \
 	sql_bits/mark_editable_objects.sql.in \
-	sql/topology_comments.sql \
 	../postgis_extension_helper_uninstall.sql
 
 EXTRA_CLEAN = sql/
@@ -71,19 +69,13 @@ sql/$(EXTENSION)--$(EXTVERSION).sql: $(EXTENSION_SCRIPTS) | sql
 sql/topology.sql: ../../topology/topology.sql | sql
 	sed -e 's/BEGIN;//g' -e 's/COMMIT;//g' -e '/^CREATE SCHEMA/d;'  $< > $@
 
-../../doc/topology_comments.sql:
-	$(MAKE) -C ../../doc comments
-
-sql/topology_comments.sql: ../../doc/topology_comments.sql | sql
-	cp $< $@
-
 sql/$(EXTENSION)--unpackaged.sql: Makefile | sql
 	echo "-- Nothing to do here" > $@
 
 sql/$(EXTENSION)--unpackaged--$(EXTVERSION).sql: ../../topology/topology.sql ../../utils/create_unpackaged.pl sql/topology_upgrade.sql Makefile | sql
-	# Ugprade before packaging
-	cat sql/topology_upgrade.sql > $@
-	cat $< | $(PERL) @top_srcdir@/utils/create_unpackaged.pl postgis_topology >> $@
+	cat $< | $(PERL) @top_srcdir@/utils/create_unpackaged.pl postgis_topology > $@
+	# Upgrade after packaging (TODO: use ANY--TARGET path?)
+	cat sql/topology_upgrade.sql >> $@
 
 #upgrade script should have everything but table, schema, type creation/alter
 #NOTE: we assume all object definitions end in ;
@@ -108,5 +100,14 @@ PG_CONFIG := @PG_CONFIG@
 PGXS := @PGXS@
 include $(PGXS)
 PERL=@PERL@
+INSTALL=@INSTALL@
+INSTALL_DATA=@INSTALL_DATA@
+ifneq (@MKDIR_P@,)
+	MKDIR_P = @MKDIR_P@
+endif
 
 VPATH = @srcdir@
+
+top_srcdir = @top_srcdir@
+top_builddir = @top_builddir@
+abs_topbuilddir=$(abspath $(top_builddir))

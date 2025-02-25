@@ -124,9 +124,15 @@ endif
 # Borrow the $libdir substitution from PGXS but customise by running the preprocessor
 # and adding the version number
 # replace @extschema@. with nothing, this is only used as placeholder for extension install
+#
+# TODO: create an intermediate product with @extschema@ in place, to reduce rules duplications
+#       in the extension/ folder
+#
 %.sql: %.sql.in
-	$(SQLPP) -I@top_builddir@/postgis/ $< | grep -v '^#' | \
+	$(SQLPP) -I@top_builddir@/postgis/ $< > $@.tmp
+	grep -v '^#' $@.tmp | \
 	$(PERL) -lpe "s'MODULE_PATHNAME'\$(MODULEPATH)'g;s'@extschema@\.''g" > $@
+	rm -f $@.tmp
 
 ../../liblwgeom/.libs/liblwgeom.a:
 	$(MAKE) -C ../../liblwgeom
@@ -146,16 +152,16 @@ $(OBJS): ../../liblwgeom/.libs/liblwgeom.a ../rt_core/librtcore.a ../../libpgcom
 $(SQL_OBJS): ../../postgis/sqldefines.h ../../postgis_revision.h
 
 #this is redundant but trying to fold in with the  other just hangs
-rtpostgis_upgrade.sql.in: rtpostgis.sql ../../utils/postgis_proc_upgrade.pl
-	$(PERL) @top_srcdir@/utils/postgis_proc_upgrade.pl $< UNUSED > $@
+rtpostgis_upgrade.sql.in: rtpostgis.sql ../../utils/create_upgrade.pl
+	$(PERL) @top_srcdir@/utils/create_upgrade.pl $< > $@
 
-rtpostgis_upgrade.sql: rtpostgis_upgrade_cleanup.sql rtpostgis_upgrade.sql.in rtpostgis_drop.sql
+rtpostgis_upgrade.sql: ../../postgis/common_before_upgrade.sql rtpostgis_upgrade_cleanup.sql rtpostgis_upgrade.sql.in rtpostgis_drop.sql ../../postgis/common_after_upgrade.sql
 	echo 'BEGIN;' > $@
 	cat $^ | sed -e 's/^BEGIN;$$//' -e 's/^COMMIT;$$//' >> $@
 	echo 'COMMIT;' >> $@
 
-uninstall_rtpostgis.sql: rtpostgis.sql ../../utils/create_undef.pl
-	$(PERL) @top_srcdir@/utils/create_undef.pl $< $(POSTGIS_PGSQL_VERSION) > $@
+uninstall_rtpostgis.sql: rtpostgis.sql ../../utils/create_uninstall.pl
+	$(PERL) @top_srcdir@/utils/create_uninstall.pl $< $(POSTGIS_PGSQL_VERSION) > $@
 
 distclean: clean
 	rm -f Makefile

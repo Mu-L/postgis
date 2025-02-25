@@ -21,6 +21,9 @@
 
 #include "../postgis_config.h"
 
+#define _GNU_SOURCE /* for vasprintf */
+#include <stdio.h>
+
 #include "pgsql2shp-core.h"
 
 /* Solaris9 does not provide stdint.h */
@@ -66,6 +69,9 @@ static char * goodDBFValue(char *in, char fieldType);
 
 /** @brief Binary to hexewkb conversion function */
 char *convert_bytes_to_hex(uint8_t *ewkb, size_t size);
+
+static char*
+core_asprintf(const char* format, ...) __attribute__ ((format (printf, 1, 2)));
 
 static char*
 core_asprintf(const char* format, ...)
@@ -448,6 +454,7 @@ create_multilinestring(SHPDUMPERSTATE *state, LWMLINE *lwmultilinestring)
 
 	obj = SHPCreateObject(state->outshptype, -1, lwmultilinestring->ngeoms, shpparts, NULL, shppoint, xpts, ypts, zpts, mpts);
 
+	free(shpparts);
 	free(xpts);
 	free(ypts);
 	free(zpts);
@@ -1310,6 +1317,7 @@ ShpDumperOpenTable(SHPDUMPERSTATE *state)
 	char buf[256];
 	int gidfound = 0, i, j, ret, status;
 	stringbuffer_t sb;
+	char *quoted = NULL;
 
 	/* Open the column map if one was specified */
 	if (state->config->column_map_filename)
@@ -1337,6 +1345,7 @@ ShpDumperOpenTable(SHPDUMPERSTATE *state)
 			PQclear(res);
 			return SHPDUMPERERR;
 		}
+		PQclear(res);
 	}
 	else
 	{
@@ -1753,6 +1762,7 @@ ShpDumperOpenTable(SHPDUMPERSTATE *state)
 			if (DBFAddField(state->dbf, dbffieldname, dbffieldtype, dbffieldsize, dbffielddecs) == -1)
 			{
 				snprintf(state->message, SHPDUMPERMSGLEN, _("Error: field %s of type %d could not be created."), dbffieldname, dbffieldtype);
+				free(dbffieldname);
 
 				return SHPDUMPERERR;
 			}
@@ -1765,6 +1775,10 @@ ShpDumperOpenTable(SHPDUMPERSTATE *state)
 			state->pgfieldtypmods[state->fieldcount] = pgtypmod;
 
 			state->fieldcount++;
+		}
+		else
+		{
+			free(dbffieldname);
 		}
 	}
 
@@ -1835,15 +1849,16 @@ ShpDumperOpenTable(SHPDUMPERSTATE *state)
 			stringbuffer_append(&sb, ",");
 		}
 
-		if (state->config->binary) {
-			stringbuffer_aprintf(&sb,
-			    "%s::text",
-			    quote_identifier(state->pgfieldnames[i]) );
+		quoted = quote_identifier(state->pgfieldnames[i]);
+		if (state->config->binary)
+		{
+			stringbuffer_aprintf(&sb, "%s::text", quoted);
 		}
-		else {
-			stringbuffer_append(&sb,
-			    quote_identifier(state->pgfieldnames[i]) );
+		else
+		{
+			stringbuffer_append(&sb, quoted);
 		}
+		free(quoted);
 	}
 
 	/* If we found a valid geometry/geography column then use it */
@@ -1854,32 +1869,26 @@ ShpDumperOpenTable(SHPDUMPERSTATE *state)
 			stringbuffer_append(&sb, ",");
 		}
 
-#ifdef WORDS_BIGENDIAN
+		quoted = quote_identifier(state->geo_col_name);
+#ifndef WORDS_BIGENDIAN
 		if (state->pgis_major_version > 0) {
-			stringbuffer_aprintf(&sb,
-			    "ST_asEWKB(ST_SetSRID(%s::geometry, 0), 'XDR') AS _geoX"
-			    quote_identifier(state->geo_col_name) );
+			stringbuffer_aprintf(&sb, "ST_asEWKB(ST_SetSRID(%s::geometry, 0), 'XDR') AS _geoX", quoted);
 		}
 		else
 		{
-			stringbuffer_aprintf(&sb,
-			    "asbinary(%s::geometry, 'XDR') AS _geoX",
-			    quote_identifier(state->geo_col_name) );
+			stringbuffer_aprintf(&sb, "asbinary(%s::geometry, 'XDR') AS _geoX", quoted);
 		}
 #else
 		if (state->pgis_major_version > 0)
 		{
-			stringbuffer_aprintf(&sb,
-			    "ST_AsEWKB(ST_SetSRID(%s::geometry, 0), 'NDR') AS _geoX",
-			    quote_identifier(state->geo_col_name) );
+			stringbuffer_aprintf(&sb, "ST_AsEWKB(ST_SetSRID(%s::geometry, 0), 'NDR') AS _geoX", quoted);
 		}
 		else
 		{
-			stringbuffer_aprintf(&sb,
-			    "asbinary(%s::geometry, 'NDR') AS _geoX",
-			    quote_identifier(state->geo_col_name) );
+			stringbuffer_aprintf(&sb, "asbinary(%s::geometry, 'NDR') AS _geoX", quoted);
 		}
 #endif
+		free(quoted);
 	}
 
 	if (state->schema)
@@ -1996,7 +2005,7 @@ int ShpLoaderGenerateShapeRow(SHPDUMPERSTATE *state)
 		/*
 		* Transform NULL numbers to '0'
 		* This is because the shapelib
-		* won't easly take care of setting
+		* won't easily take care of setting
 		* nulls unless paying the acquisition
 		* of a bug in long integer values
 		*/
@@ -2198,10 +2207,8 @@ ShpDumperDestroy(SHPDUMPERSTATE *state)
 			PQfinish(state->conn);
 
 		/* Free the query strings */
-		if (state->fetch_query)
-			free(state->fetch_query);
-		if (state->main_scan_query)
-			free(state->main_scan_query);
+		free(state->fetch_query);
+		free(state->main_scan_query);
 
 		/* Free the DBF information fields */
 		if (state->dbffieldnames)
@@ -2211,22 +2218,18 @@ ShpDumperDestroy(SHPDUMPERSTATE *state)
 			free(state->dbffieldnames);
 		}
 
-		if (state->dbffieldtypes)
-			free(state->dbffieldtypes);
-
-		if (state->pgfieldnames)
-			free(state->pgfieldnames);
+		free(state->dbffieldtypes);
+		free(state->pgfieldnames);
+		free(state->pgfieldlens);
+		free(state->pgfieldtypmods);
 
 		/* Free any column map fieldnames if specified */
 		colmap_clean(&state->column_map);
 
 		/* Free other names */
-		if (state->table)
-			free(state->table);
-		if (state->schema)
-			free(state->schema);
-		if (state->geo_col_name)
-			free(state->geo_col_name);
+		free(state->table);
+		free(state->schema);
+		free(state->geo_col_name);
 
 		/* Free the state itself */
 		free(state);

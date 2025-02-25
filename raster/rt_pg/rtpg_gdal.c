@@ -30,6 +30,7 @@
 #include <postgres.h>
 #include <fmgr.h>
 #include <funcapi.h> /* for SRF */
+#include <miscadmin.h>
 #include <utils/builtins.h> /* for text_to_cstring() */
 #include <access/htup_details.h> /* for heap_form_tuple() */
 #include <utils/lsyscache.h> /* for get_typlenbyvalalign */
@@ -582,8 +583,7 @@ Datum RASTER_Contour(PG_FUNCTION_ARGS)
 
 		/* No-op on bad return */
 		if (rv == FALSE) {
-			funcctx = SRF_PERCALL_SETUP();
-			SRF_RETURN_DONE(funcctx);
+			PG_RETURN_NULL();
 		}
 
 		funcctx->user_fctx = result;
@@ -624,6 +624,19 @@ Datum RASTER_Contour(PG_FUNCTION_ARGS)
 	else {
 		SRF_RETURN_DONE(funcctx);
 	}
+}
+
+
+static int rtpg_util_gdal_progress_func(
+	double dfComplete,
+	const char *pszMessage,
+	void *pProgressArg)
+{
+	(void)dfComplete;
+	(void)pszMessage;
+
+	/* return 0 to cancel processing, 1 to continue */
+	return !(QueryCancelPending || ProcDiePending);
 }
 
 /************************************************************************
@@ -672,7 +685,7 @@ Datum RASTER_InterpolateRaster(PG_FUNCTION_ARGS)
 	LWGEOM *lwgeom;
 	double *xcoords, *ycoords, *zcoords;
 
-	GSERIALIZED *gser = (GSERIALIZED*)PG_GETARG_POINTER(0);
+	GSERIALIZED *gser = (GSERIALIZED*)PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
 
 	/* Z value is required to drive the grid heights */
 	if (!gserialized_has_z(gser))
@@ -791,7 +804,7 @@ Datum RASTER_InterpolateRaster(PG_FUNCTION_ARGS)
 	        env.MinX, env.MaxX, env.MinY, env.MaxY,
 	        in_band_width, in_band_height,
 	        in_band_gdaltype, out_data,
-	        NULL, /* GDALProgressFunc */
+	        rtpg_util_gdal_progress_func, /* GDALProgressFunc */
 	        NULL /* ProgressArgs */
 	        );
 
@@ -1074,5 +1087,69 @@ Datum RASTER_GDALWarp(PG_FUNCTION_ARGS)
 
 	SET_VARSIZE(pgrast, pgrast->size);
 	PG_RETURN_POINTER(pgrast);
+}
+
+/***********************************************************************/
+/* Support for hooking up GDAL logging to PgSQL error/debug reporting */
+
+#define gdalErrorTypesSize 17
+
+const char* const gdalErrorTypes[gdalErrorTypesSize] =
+{
+    "None",
+    "AppDefined",
+    "OutOfMemory",
+    "FileIO",
+    "OpenFailed",
+    "IllegalArg",
+    "NotSupported",
+    "AssertionFailed",
+    "NoWriteAccess",
+    "UserInterrupt",
+    "ObjectNull",
+    "HttpResponse",
+    "AWSBucketNotFound",
+    "AWSObjectNotFound",
+    "AWSAccessDenied",
+    "AWSInvalidCredentials",
+    "AWSSignatureDoesNotMatch"
+};
+
+static void
+ogrErrorHandler(CPLErr eErrClass, int err_no, const char* msg)
+{
+    const char* gdalErrType = "unknown type";
+    if (err_no >= 0 && err_no < gdalErrorTypesSize)
+    {
+        gdalErrType = gdalErrorTypes[err_no];
+    }
+    switch (eErrClass)
+    {
+    case CE_None:
+        elog(NOTICE, "GDAL %s [%d] %s", gdalErrType, err_no, msg);
+        break;
+    case CE_Debug:
+        elog(DEBUG2, "GDAL %s [%d] %s", gdalErrType, err_no, msg);
+        break;
+    case CE_Warning:
+        elog(WARNING, "GDAL %s [%d] %s", gdalErrType, err_no, msg);
+        break;
+    case CE_Failure:
+    case CE_Fatal:
+    default:
+        elog(ERROR, "GDAL %s [%d] %s", gdalErrType, err_no, msg);
+        break;
+    }
+    return;
+}
+
+void
+rtpg_gdal_set_cpl_debug(bool value, void *extra)
+{
+	(void)extra;
+	CPLSetConfigOption("CPL_DEBUG", value ? "ON" : "OFF");
+    /* Hook up the GDAL error handlers to PgSQL elog() */
+    CPLSetErrorHandler(value ? ogrErrorHandler : NULL);
+    CPLSetCurrentErrorHandlerCatchDebug(value);
 }
 

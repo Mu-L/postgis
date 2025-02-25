@@ -53,7 +53,7 @@
  * for SET functions or function normally returning a modified raster, return
  * the original raster
  * for GET functions, return NULL
- * try to deduce a valid parameter value if it makes sence (e.g. out of range
+ * try to deduce a valid parameter value if it makes sense (e.g. out of range
  * index for addBand)
  *
  * Do not put the name of the faulty function for NOTICEs, only with ERRORs.
@@ -68,7 +68,7 @@
  * automatically free'd at the end of the function. If you want some data to
  * live between function calls, you have 2 options:
  *
- * - Use fcinfo->flinfo->fn_mcxt contex to store the data (by pointing the
+ * - Use fcinfo->flinfo->fn_mcxt context to store the data (by pointing the
  *   data you want to keep with fcinfo->flinfo->fn_extra)
  * - Use SRF funcapi, and storing the data at multi_call_memory_ctx (by pointing
  *   the data you want to keep with funcctx->user_fctx. funcctx is created by
@@ -129,18 +129,26 @@
  *   datum is copied for use.
  *****************************************************************************/
 
-#include <postgres.h> /* for palloc */
-#include <fmgr.h> /* for PG_MODULE_MAGIC */
+/* PostgreSQL */
+#include "postgres.h" /* for palloc */
+#include "fmgr.h" /* for PG_MODULE_MAGIC */
+#include "libpq/pqsignal.h"
 #include "utils/guc.h"
+#include "utils/builtins.h"
 #include "utils/memutils.h"
+#include "utils/elog.h"
 
-#include "../../postgis_config.h"
+/* PostGIS */
+#include "postgis_config.h"
+#include "liblwgeom.h"
 #include "lwgeom_pg.h"
-
-#include "rtpostgis.h"
-#include "rtpg_internal.h"
 #include "stringlist.h"
 #include "optionlist.h"
+
+/* PostGIS Raster */
+#include "rtpostgis.h"
+#include "rtpg_internal.h"
+
 
 #ifndef __GNUC__
 # define __attribute__ (x)
@@ -158,7 +166,6 @@ void _PG_init(void);
 void _PG_fini(void);
 
 #define RT_MSG_MAXLEN 256
-
 
 /* ---------------------------------------------------------------- */
 /*  Memory allocation / error reporting hooks                       */
@@ -452,8 +459,9 @@ rt_pg_vsi_check_options(char **newval, void **extra, GucSource source)
 
 static char *gdal_datapath = NULL;
 static char *gdal_vsi_options = NULL;
-extern char *gdal_enabled_drivers;
-extern bool enable_outdb_rasters;
+static char *gdal_enabled_drivers = NULL;
+static bool enable_outdb_rasters = false;
+static bool gdal_cpl_debug = false;
 
 /* ---------------------------------------------------------------- */
 /*  Useful variables                                                */
@@ -657,10 +665,9 @@ _PG_init(void) {
 	*/
 	env_postgis_gdal_enabled_drivers = getenv("POSTGIS_GDAL_ENABLED_DRIVERS");
 	if (env_postgis_gdal_enabled_drivers == NULL) {
-		boot_postgis_gdal_enabled_drivers = palloc(
-			sizeof(char) * (strlen(GDAL_DISABLE_ALL) + 1)
-		);
-		sprintf(boot_postgis_gdal_enabled_drivers, "%s", GDAL_DISABLE_ALL);
+		size_t sz = sizeof(char) * (strlen(GDAL_DISABLE_ALL) + 1);
+		boot_postgis_gdal_enabled_drivers = palloc(sz);
+		snprintf(boot_postgis_gdal_enabled_drivers, sz, "%s", GDAL_DISABLE_ALL);
 	}
 	else {
 		boot_postgis_gdal_enabled_drivers = rtpg_trim(
@@ -777,6 +784,30 @@ _PG_init(void) {
 		);
 	}
 
+	/* Prototype for CPL_Degbuf control function. */
+	if ( postgis_guc_find_option("postgis.gdal_cpl_debug") )
+	{
+		/* In this narrow case the previously installed GUC is tied to the callback in */
+		/* the previously loaded library. Probably this is happening during an */
+		/* upgrade, so the old library is where the callback ties to. */
+		elog(WARNING, "'%s' is already set and cannot be changed until you reconnect", "postgis.gdal_cpl_debug");
+	}
+	else
+	{
+		DefineCustomBoolVariable(
+			"postgis.gdal_cpl_debug", /* name */
+			"Enable GDAL debugging messages", /* short_desc */
+			"GDAL debug messages will be sent at the PgSQL debug log level", /* long_desc */
+			&gdal_cpl_debug, /* valueAddr */
+			false, /* bootValue */
+			PGC_SUSET, /* GucContext context */
+			0, /* int flags */
+			NULL, /* GucBoolCheckHook check_hook */
+			rtpg_gdal_set_cpl_debug, /* GucBoolAssignHook assign_hook */
+			NULL  /* GucShowHook show_hook */
+		);
+	}
+
 	if ( postgis_guc_find_option("postgis.gdal_vsi_options") )
 	{
 		elog(WARNING, "'%s' is already set and cannot be changed until you reconnect", "postgis.gdal_vsi_options");
@@ -805,9 +836,9 @@ _PG_init(void) {
 void
 _PG_fini(void) {
 
-	MemoryContext old_context;
+	MemoryContext old_context = MemoryContextSwitchTo(TopMemoryContext);
 
-	old_context = MemoryContextSwitchTo(TopMemoryContext);
+	elog(NOTICE, "Goodbye from PostGIS Raster %s", POSTGIS_VERSION);
 
 	/* Clean up */
 	pfree(env_postgis_gdal_enabled_drivers);

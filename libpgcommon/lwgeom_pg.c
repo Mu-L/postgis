@@ -55,9 +55,7 @@ postgisConstants *POSTGIS_CONSTANTS = NULL;
 static Oid TypenameNspGetTypid(const char *typname, Oid nsp_oid)
 {
 	return GetSysCacheOid2(TYPENAMENSP,
-#if POSTGIS_PGSQL_VERSION >= 120
 	                       Anum_pg_type_oid,
-#endif
 	                       PointerGetDatum(typname),
 	                       ObjectIdGetDatum(nsp_oid));
 }
@@ -75,19 +73,11 @@ postgis_get_extension_schema(Oid ext_oid)
     HeapTuple   tuple;
     ScanKeyData entry[1];
 
-#if POSTGIS_PGSQL_VERSION < 120
-    Relation rel = heap_open(ExtensionRelationId, AccessShareLock);
-    ScanKeyInit(&entry[0],
-	    ObjectIdAttributeNumber,
-        BTEqualStrategyNumber, F_OIDEQ,
-        ObjectIdGetDatum(ext_oid));
-#else
     Relation rel = table_open(ExtensionRelationId, AccessShareLock);
     ScanKeyInit(&entry[0],
     	Anum_pg_extension_oid,
         BTEqualStrategyNumber, F_OIDEQ,
         ObjectIdGetDatum(ext_oid));
-#endif /* POSTGIS_PGSQL_VERSION */
 
     scandesc = systable_beginscan(rel, ExtensionOidIndexId, true,
                                   NULL, 1, entry);
@@ -102,11 +92,7 @@ postgis_get_extension_schema(Oid ext_oid)
 
     systable_endscan(scandesc);
 
-#if POSTGIS_PGSQL_VERSION < 120
-    heap_close(rel, AccessShareLock);
-#else
     table_close(rel, AccessShareLock);
-#endif
 
     return result;
 }
@@ -114,17 +100,52 @@ postgis_get_extension_schema(Oid ext_oid)
 static Oid
 postgis_get_full_version_schema()
 {
-	const char* proname = "postgis_full_version";
-	List* names = stringToQualifiedNameList(proname);
-	#if POSTGIS_PGSQL_VERSION < 140
-	FuncCandidateList clist = FuncnameGetCandidates(names, -1, NIL, false, false, false);
-	#else
-	FuncCandidateList clist = FuncnameGetCandidates(names, -1, NIL, false, false, false, false);
-	#endif
-	if (!clist)
-		return InvalidOid;
+	const char* query =  "SELECT pronamespace "
+		" FROM pg_catalog.pg_proc "
+		" WHERE proname = 'postgis_full_version'";
+	int spi_result;
+	Oid funcNameSpaceOid;
 
-	return get_func_namespace(clist->oid);
+	if (SPI_OK_CONNECT != SPI_connect())
+	{
+		elog(ERROR, "%s: could not connect to SPI manager", __func__);
+		return InvalidOid;
+	}
+
+	/* Execute the query, noting the readonly status of this SQL */
+	spi_result = SPI_execute(query, true, 0);
+
+	if (spi_result != SPI_OK_SELECT || SPI_tuptable == NULL){
+		elog(ERROR, "%s: error executing query %d", __func__, spi_result);
+		SPI_finish();
+		return InvalidOid;
+	}
+
+	/* Read back the OID of the function namespace, only if one result returned
+	  If more than one, then this install is f..cked.
+		If 0 then postgis is not installed at all */
+	if (SPI_processed == 1)
+	{
+		TupleDesc tupdesc;
+		SPITupleTable *tuptable = SPI_tuptable;
+		HeapTuple tuple;
+
+		tupdesc = SPI_tuptable->tupdesc;
+		tuptable = SPI_tuptable;
+		tuple = tuptable->vals[0];
+		funcNameSpaceOid = atoi(SPI_getvalue(tuple, tupdesc, 1));
+
+		if (SPI_tuptable) SPI_freetuptable(tuptable);
+		SPI_finish();
+	}
+	else
+	{
+		elog(ERROR, "Cannot determine install schema of postgis_full_version function.");
+		SPI_finish();
+		return InvalidOid;
+	}
+
+	return funcNameSpaceOid;
 }
 
 
@@ -329,6 +350,8 @@ pg_free(void *ptr)
 	pfree(ptr);
 }
 
+static void pg_error(const char *fmt, va_list ap) __attribute__ (( format(printf, 1, 0) ));
+
 static void
 pg_error(const char *fmt, va_list ap)
 {
@@ -339,6 +362,8 @@ pg_error(const char *fmt, va_list ap)
 	errmsg[PGC_ERRMSG_MAXLEN]='\0';
 	ereport(ERROR, (errmsg_internal("%s", errmsg)));
 }
+
+static void pg_warning(const char *fmt, va_list ap) __attribute__ (( format(printf, 1, 0) ));
 
 static void
 pg_warning(const char *fmt, va_list ap)
@@ -351,6 +376,8 @@ pg_warning(const char *fmt, va_list ap)
 	ereport(WARNING, (errmsg_internal("%s", errmsg)));
 }
 
+static void pg_notice(const char *fmt, va_list ap) __attribute__ (( format(printf, 1, 0) ));
+
 static void
 pg_notice(const char *fmt, va_list ap)
 {
@@ -361,6 +388,8 @@ pg_notice(const char *fmt, va_list ap)
 	errmsg[PGC_ERRMSG_MAXLEN]='\0';
 	ereport(NOTICE, (errmsg_internal("%s", errmsg)));
 }
+
+static void pg_debug(int level, const char *fmt, va_list ap) __attribute__ (( format(printf, 2, 0) ));
 
 static void
 pg_debug(int level, const char *fmt, va_list ap)
@@ -515,11 +544,15 @@ postgis_guc_find_option(const char *name)
 	 * By equating const char ** with struct config_generic *, we are assuming
 	 * the name field is first in config_generic.
 	 */
+#if POSTGIS_PGSQL_VERSION >= 160
+	res = (struct config_generic **) find_option((void *) &key, false, true, ERROR);
+#else
 	res = (struct config_generic **) bsearch((void *) &key,
 		 (void *) get_guc_variables(),
 		 GetNumConfigOptions(),
 		 sizeof(struct config_generic *),
 		 postgis_guc_var_compare);
+#endif
 
 	/* Found nothing? Good */
 	if ( ! res ) return 0;
@@ -533,31 +566,6 @@ postgis_guc_find_option(const char *name)
 }
 
 
-#if POSTGIS_PGSQL_VERSION < 120
-Datum
-CallerFInfoFunctionCall3(PGFunction func, FmgrInfo *flinfo, Oid collation, Datum arg1, Datum arg2, Datum arg3)
-{
-	FunctionCallInfoData fcinfo;
-	Datum		result;
-
-	InitFunctionCallInfoData(fcinfo, flinfo, 3, collation, NULL, NULL);
-
-	fcinfo.arg[0] = arg1;
-	fcinfo.arg[1] = arg2;
-	fcinfo.arg[2] = arg3;
-	fcinfo.argnull[0] = false;
-	fcinfo.argnull[1] = false;
-	fcinfo.argnull[2] = false;
-
-	result = (*func) (&fcinfo);
-
-	/* Check for null result, since caller is clearly not expecting one */
-	if (fcinfo.isnull)
-		elog(ERROR, "function %p returned NULL", (void *) func);
-
-	return result;
-}
-#else
 /* PgSQL 12+ still lacks 3-argument version of these functions */
 Datum
 CallerFInfoFunctionCall3(PGFunction func, FmgrInfo *flinfo, Oid collation, Datum arg1, Datum arg2, Datum arg3)
@@ -578,8 +586,7 @@ CallerFInfoFunctionCall3(PGFunction func, FmgrInfo *flinfo, Oid collation, Datum
 
     /* Check for null result, since caller is clearly not expecting one */
     if (fcinfo->isnull)
-        elog(ERROR, "function %p returned NULL", (void *) func);
+        elog(ERROR, "function %p returned NULL", (void *)&func);
 
     return result;
 }
-#endif

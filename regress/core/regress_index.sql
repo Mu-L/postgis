@@ -47,12 +47,14 @@ CREATE FUNCTION estimate_error(qry text, tol int)
 RETURNS text
 LANGUAGE 'plpgsql' VOLATILE AS $$
 DECLARE
-  anl TEXT; -- analisys
+  anl TEXT; -- analysis
   err INT; -- absolute difference between planned and actual rows
   est INT; -- estimated count
   act INT; -- actual count
   mat TEXT[];
 BEGIN
+
+  -- TODO: rewrite using json output ?
   EXECUTE 'EXPLAIN ANALYZE ' || qry INTO anl;
 
   SELECT regexp_matches(anl, ' rows=([0-9]*) .* rows=([0-9]*) ')
@@ -63,7 +65,7 @@ BEGIN
 
   err = abs(est-act);
 
-  RETURN act || '+=' || tol || ':' || coalesce(
+  RETURN act || '+-' || tol || ':' || coalesce(
     nullif((err < tol)::text,'false'),
     'false:'||err::text
     );
@@ -88,7 +90,7 @@ ALTER TABLE test ALTER COLUMN the_geom SET STATISTICS 10000;
 
 ANALYZE test;
 
-SELECT estimate_error(
+SELECT '&&', id, estimate_error(
   'select num from test where the_geom && ' || box, tol )
   FROM sample_queries ORDER BY id;
 
@@ -97,7 +99,7 @@ SELECT estimate_error(
 CREATE INDEX expressional_gist on test using gist ( st_centroid(the_geom) );
 ANALYZE test;
 
-SELECT 'expr', estimate_error(
+SELECT 'expr &&', id, estimate_error(
   'select num from test where st_centroid(the_geom) && ' || box, tol )
   FROM sample_queries ORDER BY id;
 

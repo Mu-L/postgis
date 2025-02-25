@@ -34,7 +34,7 @@
 * the following kinds of objects:
 *
 *   geometries-with-trees
-*      PreparedGeometry, RTree, CIRC_TREE, RECT_TREE
+*      PreparedGeometry, IntervalTree, CIRC_TREE, RECT_TREE
 *
 * Each GenericCache* has a type, and after that
 * some data. Similar to generic LWGEOM*. Test that
@@ -297,7 +297,7 @@ getSRSbySRID(FunctionCallInfo fcinfo, int32_t srid, bool short_crs)
 			 postgis_spatial_ref_sys(),
 			 srid);
 
-	err = SPI_exec(query, 1);
+	err = SPI_execute(query, true, 1);
 	if (err < 0)
 	{
 		elog(NOTICE, "%s: error executing query %d", __func__, err);
