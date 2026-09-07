@@ -10,7 +10,7 @@ msgstr ""
 "Project-Id-Version: postgis 3.5\n"
 "Report-Msgid-Bugs-To: https://bugs.kde.org\n"
 "POT-Creation-Date: 2026-08-04 15:37+0000\n"
-"PO-Revision-Date: 2026-09-04 10:39+0000\n"
+"PO-Revision-Date: 2026-09-07 00:30+0000\n"
 "Last-Translator: Teramoto Ikuhiro <teramoto.ikuhiro576@naro.go.jp>\n"
 "Language-Team: Japanese <https://weblate.osgeo.org/projects/postgis/postgis-"
 "manual/ja/>\n"
@@ -1063,8 +1063,8 @@ msgid ""
 "Creates a table that will hold some interesting values for managing history "
 "tables. Creates a table called <varname>historic_information</varname>"
 msgstr ""
-"履歴テーブルの管理のための値を持つテーブルを生成します。テーブル名は<varname>"
-"historic_information</varname>になります。"
+"履歴テーブルの管理のための値を持つテーブルを生成します。テーブル名は "
+"<varname>historic_information</varname> になります。"
 
 #. Tag: para
 #, no-c-format
@@ -3886,7 +3886,7 @@ msgstr "GEOS モジュールで実現しています。"
 #. Tag: para
 #, no-c-format
 msgid "These examples use edges we created in <xref linkend=\"AddEdge\"/>"
-msgstr "本例では<xref linkend=\"AddEdge\"/>で作ったエッジを使います。"
+msgstr "本例では <xref linkend=\"AddEdge\"/> で作ったエッジを使います。"
 
 #. Tag: para
 #, no-c-format
@@ -5288,8 +5288,8 @@ msgstr ""
 msgid ""
 "This uses the topo geometry we created in <xref linkend=\"CreateTopoGeom\"/>"
 msgstr ""
-"ここでは<xref linkend=\"CreateTopoGeom\"/>で生成した TopoGeometry を使用して"
-"います。"
+"ここでは <xref linkend=\"CreateTopoGeom\"/> で生成した TopoGeometry を使用し"
+"ています。"
 
 #. Tag: para
 #, no-c-format
@@ -5823,8 +5823,8 @@ msgid ""
 "Retrieve the PostGIS source archive from the downloads website <link "
 "xlink:href=\"&postgis_download_url;\"> &postgis_download_url; </link>"
 msgstr ""
-"ダウンロードサイト<link xlink:href=\"&postgis_download_url;\"> "
-"&postgis_download_url; </link>からソースのアーカイブを入手します。"
+"ダウンロードサイト <link xlink:href=\"&postgis_download_url;\"> "
+"&postgis_download_url; </link> からソースのアーカイブを入手します。"
 
 #. Tag: para
 #, no-c-format
